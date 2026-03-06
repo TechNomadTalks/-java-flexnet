@@ -1,6 +1,6 @@
 # FlexNet - A Complete Neural Network Implementation in Pure Java
 
-This repository contains a fully functional multi-layer perceptron (MLP) neural network implemented entirely from scratch in Java, without using any external libraries such as ND4J, DeepLearning4J, TensorFlow, or PyTorch.
+ fully functional multi-layerThis repository contains a perceptron (MLP) neural network implemented entirely from scratch in Java, without using any external libraries such as ND4J, DeepLearning4J, TensorFlow, or PyTorch.
 
 All functionality including feedforward computation, backpropagation, gradient descent optimization, and model persistence has been implemented using only standard Java libraries (java.util, java.io).
 
