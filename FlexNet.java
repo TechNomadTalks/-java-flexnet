@@ -6,53 +6,52 @@ import java.util.*;
  * 
  * This class implements a complete neural network with:
  * - Configurable architecture (input, hidden layers, output)
- * - Multiple activation functions (sigmoid, tanh, relu, linear)
+ * - Multiple activation functions (sigmoid, tanh, relu, linear, elu, softmax)
  * - Xavier/Glorot and He weight initialization
  * - Backpropagation with momentum and L2 regularization
  * - Batch, mini-batch, and stochastic gradient descent
  * - Model serialization/deserialization
+ * - Multiple loss functions (MSE, Cross-Entropy)
+ * - Training metrics (accuracy, precision, recall, F1, confusion matrix)
  * 
  * @author FlexNet Implementation
- * @version 1.0
+ * @version 1.1
  */
+
+enum LossType {
+    MSE,
+    CROSS_ENTROPY
+}
+
 public class FlexNet {
     
-    // Network architecture
     private int inputSize;
     private int[] hiddenLayers;
     private int outputSize;
     
-    // Weights and biases
-    // weights[layer][neuron][input_index] - weights for layer L going to neuron N from previous layer
-    // biases[layer][neuron] - bias for neuron N in layer L
     private double[][][] weights;
     private double[][] biases;
     
-    // Velocity for momentum-based gradient descent
     private double[][][] velocityW;
     private double[][] velocityB;
     
-    // Activation functions for each layer (including output layer)
     private String[] activations;
     
-    // Hyperparameters
     private double learningRate;
     private double momentum;
-    private double regularization;  // L2 regularization strength
+    private double regularization;
     private int batchSize;
     
-    // Random number generator for weight initialization
     private Random random;
     
-    // Store pre-activation (z) and post-activation (a) values for backpropagation
-    // preActivations[layer][neuron] = z_l = W_l * a_{l-1} + b_l
-    // postActivations[layer][neuron] = a_l = activation(z_l)
     private double[][] preActivations;
     private double[][] postActivations;
     
-    // Delta values for backpropagation
-    // delta[layer][neuron] = partial derivative of loss with respect to z_l
     private double[][] deltas;
+    
+    private LossType lossType;
+    
+    private static final double ELU_ALPHA = 1.0;
     
     /**
      * Constructor with all parameters
@@ -79,6 +78,7 @@ public class FlexNet {
         this.regularization = regularization;
         this.batchSize = batchSize;
         this.random = new Random();
+        this.lossType = LossType.MSE;
         
         initializeArchitecture();
         initializeWeights();
@@ -103,34 +103,24 @@ public class FlexNet {
              learningRate, momentum, regularization, 32);
     }
     
-    /**
-     * Initialize the network architecture arrays
-     */
     private void initializeArchitecture() {
-        int numLayers = hiddenLayers.length + 1;  // Hidden layers + output layer
+        int numLayers = hiddenLayers.length + 1;
         
-        // Ensure activations array is the correct size
         if (activations.length != numLayers) {
             String[] newActivations = new String[numLayers];
             Arrays.fill(newActivations, "relu");
             this.activations = newActivations;
         }
         
-        // Initialize weights and biases
-        // Layer 0 connects input to first hidden layer
-        // Layer i connects layer i-1 to layer i
-        
         weights = new double[numLayers][][];
         biases = new double[numLayers][];
         velocityW = new double[numLayers][][];
         velocityB = new double[numLayers][];
         
-        // First layer: inputSize -> hiddenLayers[0]
         int prevSize = inputSize;
         for (int l = 0; l < numLayers; l++) {
             int currentSize = (l < hiddenLayers.length) ? hiddenLayers[l] : outputSize;
             
-            // weights[l][n][i] = weight from input i to neuron n in layer l
             weights[l] = new double[currentSize][prevSize];
             biases[l] = new double[currentSize];
             velocityW[l] = new double[currentSize][prevSize];
@@ -139,7 +129,6 @@ public class FlexNet {
             prevSize = currentSize;
         }
         
-        // Initialize storage for forward/backward pass
         preActivations = new double[numLayers][];
         postActivations = new double[numLayers][];
         deltas = new double[numLayers][];
@@ -153,56 +142,37 @@ public class FlexNet {
     }
     
     /**
-     * Initialize weights using appropriate initialization scheme
+     * Initialize weights using Xavier/Glorot or He initialization
      * 
-     * Xavier/Glorot initialization:
-     * - Good for sigmoid and tanh activations
-     * - Weights ~ Uniform[-limit, limit] where limit = sqrt(6 / (fanIn + fanOut))
-     * - Or Gaussian with mean=0, std = sqrt(2 / (fanIn + fanOut))
-     * 
-     * He initialization:
-     * - Good for ReLU and its variants
-     * - Weights ~ Gaussian with mean=0, std = sqrt(2 / fanIn)
-     * 
-     * @param layerIndex The layer index to initialize
-     * @param fanIn Number of inputs to the layer
-     * @param fanOut Number of neurons in the layer
+     * Xavier/Glorot: Good for sigmoid and tanh - weights ~ Uniform[-sqrt(6/(fanIn+fanOut)), sqrt(6/(fanIn+fanOut))]
+     * He: Good for ReLU and variants - weights ~ Gaussian with std = sqrt(2/fanIn)
      */
     private void initializeWeights() {
         int numLayers = weights.length;
         
         for (int l = 0; l < numLayers; l++) {
-            int fanIn = weights[l][0].length;  // Number of inputs
-            int fanOut = weights[l].length;    // Number of neurons
+            int fanIn = weights[l][0].length;
+            int fanOut = weights[l].length;
             
             String activation = activations[l];
             double limit;
             
-            // Determine initialization based on activation function
             if (activation.equalsIgnoreCase("relu") || 
-                activation.equalsIgnoreCase("leakyrelu")) {
-                // He initialization for ReLU
-                // std = sqrt(2 / fanIn)
+                activation.equalsIgnoreCase("leakyrelu") ||
+                activation.equalsIgnoreCase("elu")) {
                 double std = Math.sqrt(2.0 / fanIn);
                 for (int n = 0; n < weights[l].length; n++) {
                     for (int i = 0; i < weights[l][n].length; i++) {
-                        // Gaussian with std
                         weights[l][n][i] = random.nextGaussian() * std;
                     }
-                    // Biases initialized to small positive values for ReLU
-                    // This helps with dead neurons
                     biases[l][n] = 0.01;
                 }
             } else {
-                // Xavier/Glorot initialization for sigmoid and tanh
-                // limit = sqrt(6 / (fanIn + fanOut))
                 limit = Math.sqrt(6.0 / (fanIn + fanOut));
                 for (int n = 0; n < weights[l].length; n++) {
                     for (int i = 0; i < weights[l][n].length; i++) {
-                        // Uniform distribution [-limit, limit]
                         weights[l][n][i] = (random.nextDouble() * 2 - 1) * limit;
                     }
-                    // Biases initialized to zero
                     biases[l][n] = 0.0;
                 }
             }
@@ -216,12 +186,6 @@ public class FlexNet {
      *   z_l = W_l * a_{l-1} + b_l    (pre-activation)
      *   a_l = activation(z_l)       (post-activation)
      * 
-     * Where:
-     *   - W_l is the weight matrix for layer l
-     *   - a_{l-1} is the output from previous layer (or input for l=0)
-     *   - b_l is the bias vector for layer l
-     *   - activation is the activation function
-     * 
      * @param input Input features (size inputSize)
      * @return Output predictions (size outputSize)
      */
@@ -231,20 +195,16 @@ public class FlexNet {
                                                ", got " + input.length);
         }
         
-        // Copy input to first layer's post-activation
         postActivations[0] = input.clone();
         
         int numLayers = weights.length;
         
-        // Forward pass through each layer
         for (int l = 0; l < numLayers; l++) {
             int currentLayerSize = weights[l].length;
             
-            // Compute pre-activation: z_l = W_l * a_{l-1} + b_l
             for (int n = 0; n < currentLayerSize; n++) {
                 double sum = biases[l][n];
                 
-                // Dot product: sum = Σ(w_i * a_i)
                 double[] prevActivations = (l == 0) ? input : postActivations[l - 1];
                 for (int i = 0; i < prevActivations.length; i++) {
                     sum += weights[l][n][i] * prevActivations[i];
@@ -253,11 +213,9 @@ public class FlexNet {
                 preActivations[l][n] = sum;
             }
             
-            // Apply activation function
             postActivations[l] = applyActivation(preActivations[l], activations[l]);
         }
         
-        // Return output layer predictions
         return postActivations[numLayers - 1].clone();
     }
     
@@ -265,17 +223,13 @@ public class FlexNet {
      * Apply activation function to an array of pre-activation values
      * 
      * Supported activations:
-     * - sigmoid: σ(x) = 1 / (1 + e^(-x))
-     *           Derivative: σ'(x) = σ(x) * (1 - σ(x))
-     * 
-     * - tanh: tanh(x) = (e^x - e^(-x)) / (e^x + e^(-x))
-     *        Derivative: tanh'(x) = 1 - tanh²(x)
-     * 
-     * - relu: max(0, x)
-     *        Derivative: 1 if x > 0, 0 otherwise (or α for leaky ReLU)
-     * 
-     * - linear: x (identity)
-     *          Derivative: 1
+     * - sigmoid: σ(x) = 1 / (1 + e^(-x)), derivative: σ'(x) = σ(x) * (1 - σ(x))
+     * - tanh: tanh(x), derivative: tanh'(x) = 1 - tanh²(x)
+     * - relu: max(0, x), derivative: 1 if x > 0, 0 otherwise
+     * - leakyrelu: x if x > 0, 0.01x otherwise
+     * - elu: x > 0 ? x : alpha * (e^x - 1)
+     * - softmax: exp(x_i) / sum(exp(x_j))
+     * - linear: x, derivative: 1
      * 
      * @param values Array of pre-activation values
      * @param activationType Type of activation function
@@ -287,8 +241,6 @@ public class FlexNet {
         switch (activationType.toLowerCase()) {
             case "sigmoid":
                 for (int i = 0; i < values.length; i++) {
-                    // Sigmoid: σ(x) = 1 / (1 + e^(-x))
-                    // Numerically stable version: if x < 0, compute as e^x / (1 + e^x)
                     if (values[i] >= 0) {
                         result[i] = 1.0 / (1.0 + Math.exp(-values[i]));
                     } else {
@@ -300,28 +252,49 @@ public class FlexNet {
                 
             case "tanh":
                 for (int i = 0; i < values.length; i++) {
-                    // Tanh: tanh(x) = (e^x - e^(-x)) / (e^x + e^(-x))
                     result[i] = Math.tanh(values[i]);
                 }
                 break;
                 
             case "relu":
                 for (int i = 0; i < values.length; i++) {
-                    // ReLU: max(0, x)
                     result[i] = Math.max(0, values[i]);
                 }
                 break;
                 
             case "leakyrelu":
                 for (int i = 0; i < values.length; i++) {
-                    // Leaky ReLU: x if x > 0, 0.01x otherwise
                     result[i] = (values[i] > 0) ? values[i] : 0.01 * values[i];
+                }
+                break;
+                
+            case "elu":
+                for (int i = 0; i < values.length; i++) {
+                    result[i] = (values[i] > 0) ? values[i] : ELU_ALPHA * (Math.exp(values[i]) - 1);
+                }
+                break;
+                
+            case "softmax":
+                double max = Double.NEGATIVE_INFINITY;
+                for (int i = 0; i < values.length; i++) {
+                    if (values[i] > max) {
+                        max = values[i];
+                    }
+                }
+                
+                double sum = 0.0;
+                for (int i = 0; i < values.length; i++) {
+                    result[i] = Math.exp(values[i] - max);
+                    sum += result[i];
+                }
+                
+                for (int i = 0; i < values.length; i++) {
+                    result[i] /= sum;
                 }
                 break;
                 
             case "linear":
             case "identity":
-                // Linear/Identity: f(x) = x
                 System.arraycopy(values, 0, result, 0, values.length);
                 break;
                 
@@ -342,8 +315,6 @@ public class FlexNet {
     private double activationDerivative(double preActivationValue, String activationType) {
         switch (activationType.toLowerCase()) {
             case "sigmoid":
-                // σ'(x) = σ(x) * (1 - σ(x))
-                // Using pre-activation: σ'(x) = (1 / (1 + e^(-x))) * (1 - 1 / (1 + e^(-x)))
                 double sigmoid;
                 if (preActivationValue >= 0) {
                     sigmoid = 1.0 / (1.0 + Math.exp(-preActivationValue));
@@ -354,21 +325,20 @@ public class FlexNet {
                 return sigmoid * (1.0 - sigmoid);
                 
             case "tanh":
-                // tanh'(x) = 1 - tanh²(x)
                 double tanhValue = Math.tanh(preActivationValue);
                 return 1.0 - tanhValue * tanhValue;
                 
             case "relu":
-                // ReLU': 1 if x > 0, 0 otherwise
                 return (preActivationValue > 0) ? 1.0 : 0.0;
                 
             case "leakyrelu":
-                // Leaky ReLU': 1 if x > 0, 0.01 otherwise
                 return (preActivationValue > 0) ? 1.0 : 0.01;
+                
+            case "elu":
+                return (preActivationValue > 0) ? 1.0 : ELU_ALPHA * Math.exp(preActivationValue);
                 
             case "linear":
             case "identity":
-                // Linear': 1
                 return 1.0;
                 
             default:
@@ -386,44 +356,54 @@ public class FlexNet {
      * 4. Compute gradients: ∂L/∂W_l = δ_l * a_{l-1}^T, ∂L/∂b_l = δ_l
      * 5. Update weights: W_l = W_l - η * (∂L/∂W_l + λ * W_l) + momentum * v
      * 
-     * Where:
-     *   - L is the loss function (MSE)
-     *   - η is the learning rate
-     *   - λ is the regularization strength
-     *   - v is the velocity for momentum
-     * 
      * @param input Input features
      * @param target Target output
      */
     public void train(double[] input, double[] target) {
-        // Forward pass
+        train(input, target, lossType);
+    }
+    
+    /**
+     * Train the neural network on a single sample using stochastic gradient descent
+     * with specified loss type
+     * 
+     * @param input Input features
+     * @param target Target output
+     * @param lossType The loss function to use
+     */
+    public void train(double[] input, double[] target, LossType lossType) {
         predict(input);
         
         int numLayers = weights.length;
         int outputLayer = numLayers - 1;
         
-        // Compute output layer delta (error term)
-        // For MSE loss: L = (1/n) * Σ(y_true - y_pred)²
-        // ∂L/∂a_L = -(2/n) * (y_true - y_pred)
-        // δ_L = ∂L/∂a_L * σ'(z_L)
-        
         double[] output = postActivations[outputLayer];
         
-        for (int n = 0; n < outputSize; n++) {
-            double error = output[n] - target[n];
-            deltas[outputLayer][n] = error * activationDerivative(
-                preActivations[outputLayer][n], activations[outputLayer]);
+        if (lossType == LossType.CROSS_ENTROPY && 
+            activations[outputLayer].equalsIgnoreCase("softmax")) {
+            for (int n = 0; n < outputSize; n++) {
+                deltas[outputLayer][n] = output[n] - target[n];
+            }
+        } else if (lossType == LossType.CROSS_ENTROPY) {
+            for (int n = 0; n < outputSize; n++) {
+                double error = output[n] - target[n];
+                deltas[outputLayer][n] = error * activationDerivative(
+                    preActivations[outputLayer][n], activations[outputLayer]);
+            }
+        } else {
+            for (int n = 0; n < outputSize; n++) {
+                double error = output[n] - target[n];
+                deltas[outputLayer][n] = error * activationDerivative(
+                    preActivations[outputLayer][n], activations[outputLayer]);
+            }
         }
         
-        // Backpropagate through hidden layers
-        // δ_l = (W_{l+1}^T * δ_{l+1}) * σ'(z_l)
         for (int l = outputLayer - 1; l >= 0; l--) {
             int nextLayerSize = weights[l + 1].length;
             
             for (int n = 0; n < weights[l].length; n++) {
                 double errorSum = 0.0;
                 
-                // Sum of weighted errors from next layer
                 for (int nextN = 0; nextN < nextLayerSize; nextN++) {
                     errorSum += weights[l + 1][nextN][n] * deltas[l + 1][nextN];
                 }
@@ -433,11 +413,6 @@ public class FlexNet {
             }
         }
         
-        // Update weights and biases
-        // Using gradient descent: W = W - learningRate * gradient
-        // With momentum: v = momentum * v - learningRate * gradient
-        //                W = W + v
-        
         double[] prevActivations = input;
         
         for (int l = 0; l < numLayers; l++) {
@@ -446,20 +421,15 @@ public class FlexNet {
             }
             
             for (int n = 0; n < weights[l].length; n++) {
-                // Update bias: b = b - η * δ
                 double delta = deltas[l][n];
                 
-                // Apply momentum to bias
                 velocityB[l][n] = momentum * velocityB[l][n] - learningRate * delta;
                 biases[l][n] += velocityB[l][n];
                 
-                // Update weights: W = W - η * (δ * a_prev + λ * W)
                 for (int i = 0; i < weights[l][n].length; i++) {
-                    // Gradient = δ * a_prev + regularization * W
                     double gradient = delta * prevActivations[i] + 
                                      regularization * weights[l][n][i];
                     
-                    // Apply momentum to weights
                     velocityW[l][n][i] = momentum * velocityW[l][n][i] - 
                                          learningRate * gradient;
                     weights[l][n][i] += velocityW[l][n][i];
@@ -471,14 +441,23 @@ public class FlexNet {
     /**
      * Train the neural network on a batch of samples
      * 
-     * Performs mini-batch gradient descent:
-     * 1. Accumulate gradients over batch
-     * 2. Update weights after processing batch
+     * Performs mini-batch gradient descent: accumulate gradients over batch, then update weights
      * 
      * @param inputs Array of input samples
      * @param targets Array of target outputs
      */
     public void train(double[][] inputs, double[][] targets) {
+        train(inputs, targets, lossType);
+    }
+    
+    /**
+     * Train the neural network on a batch of samples with specified loss type
+     * 
+     * @param inputs Array of input samples
+     * @param targets Array of target outputs
+     * @param lossType The loss function to use
+     */
+    public void train(double[][] inputs, double[][] targets, LossType lossType) {
         if (inputs.length != targets.length) {
             throw new IllegalArgumentException("Number of inputs and targets must match");
         }
@@ -487,19 +466,16 @@ public class FlexNet {
             throw new IllegalArgumentException("Batch size must be positive");
         }
         
-        // Stochastic gradient descent (batchSize = 1)
         if (batchSize == 1) {
             for (int i = 0; i < inputs.length; i++) {
-                train(inputs[i], targets[i]);
+                train(inputs[i], targets[i], lossType);
             }
             return;
         }
         
-        // Mini-batch gradient descent
         int numSamples = inputs.length;
         int numBatches = (int) Math.ceil((double) numSamples / batchSize);
         
-        // Store accumulated gradients
         double[][][] gradW = new double[weights.length][][];
         double[][] gradB = new double[weights.length][];
         
@@ -508,13 +484,11 @@ public class FlexNet {
             gradB[l] = new double[weights[l].length];
         }
         
-        // Process each mini-batch
         for (int batch = 0; batch < numBatches; batch++) {
             int startIdx = batch * batchSize;
             int endIdx = Math.min(startIdx + batchSize, numSamples);
             int batchActualSize = endIdx - startIdx;
             
-            // Reset accumulated gradients for this batch
             for (int l = 0; l < weights.length; l++) {
                 for (int n = 0; n < weights[l].length; n++) {
                     Arrays.fill(gradW[l][n], 0.0);
@@ -522,24 +496,33 @@ public class FlexNet {
                 }
             }
             
-            // Forward and backward pass for each sample in batch
             int numLayers = weights.length;
             int outputLayer = numLayers - 1;
             
             for (int i = startIdx; i < endIdx; i++) {
-                // Forward pass
                 predict(inputs[i]);
                 
-                // Compute output layer delta
                 double[] output = postActivations[outputLayer];
                 
-                for (int n = 0; n < outputSize; n++) {
-                    double error = output[n] - targets[i][n];
-                    deltas[outputLayer][n] = error * activationDerivative(
-                        preActivations[outputLayer][n], activations[outputLayer]);
+                if (lossType == LossType.CROSS_ENTROPY && 
+                    activations[outputLayer].equalsIgnoreCase("softmax")) {
+                    for (int n = 0; n < outputSize; n++) {
+                        deltas[outputLayer][n] = output[n] - targets[i][n];
+                    }
+                } else if (lossType == LossType.CROSS_ENTROPY) {
+                    for (int n = 0; n < outputSize; n++) {
+                        double error = output[n] - targets[i][n];
+                        deltas[outputLayer][n] = error * activationDerivative(
+                            preActivations[outputLayer][n], activations[outputLayer]);
+                    }
+                } else {
+                    for (int n = 0; n < outputSize; n++) {
+                        double error = output[n] - targets[i][n];
+                        deltas[outputLayer][n] = error * activationDerivative(
+                            preActivations[outputLayer][n], activations[outputLayer]);
+                    }
                 }
                 
-                // Backpropagate
                 for (int l = outputLayer - 1; l >= 0; l--) {
                     int nextLayerSize = weights[l + 1].length;
                     
@@ -555,7 +538,6 @@ public class FlexNet {
                     }
                 }
                 
-                // Accumulate gradients
                 double[] prevActivations = inputs[i];
                 
                 for (int l = 0; l < numLayers; l++) {
@@ -573,18 +555,14 @@ public class FlexNet {
                 }
             }
             
-            // Average gradients and update weights
             for (int l = 0; l < numLayers; l++) {
                 for (int n = 0; n < weights[l].length; n++) {
-                    // Average gradient for bias
                     double avgGradB = gradB[l][n] / batchActualSize;
                     
-                    // Apply momentum and update bias
                     velocityB[l][n] = momentum * velocityB[l][n] - 
                                      learningRate * avgGradB;
                     biases[l][n] += velocityB[l][n];
                     
-                    // Update weights
                     for (int i2 = 0; i2 < weights[l][n].length; i2++) {
                         double avgGradW = gradW[l][n][i2] / batchActualSize +
                                          regularization * weights[l][n][i2];
@@ -602,9 +580,6 @@ public class FlexNet {
      * Compute Mean Squared Error loss
      * 
      * MSE = (1/n) * Σ(y_true - y_pred)²
-     * 
-     * This measures the average squared difference between predicted and true values.
-     * Lower MSE indicates better fit.
      * 
      * @param inputs Array of input samples
      * @param targets Array of target outputs
@@ -626,8 +601,202 @@ public class FlexNet {
             }
         }
         
-        // MSE = (1/n) * Σ(y_true - y_pred)²
         return totalError / inputs.length;
+    }
+    
+    /**
+     * Compute Cross-Entropy loss
+     * 
+     * L = -sum(y_true * log(y_pred))
+     * 
+     * @param inputs Array of input samples
+     * @param targets Array of target outputs (one-hot encoded or class indices)
+     * @return Cross-Entropy loss
+     */
+    public double computeCrossEntropy(double[][] inputs, double[][] targets) {
+        if (inputs.length != targets.length) {
+            throw new IllegalArgumentException("Number of inputs and targets must match");
+        }
+        
+        double totalLoss = 0.0;
+        double epsilon = 1e-15;
+        
+        for (int i = 0; i < inputs.length; i++) {
+            double[] prediction = predict(inputs[i]);
+            
+            for (int j = 0; j < targets[i].length; j++) {
+                double pred = Math.max(epsilon, Math.min(1 - epsilon, prediction[j]));
+                totalLoss -= targets[i][j] * Math.log(pred);
+            }
+        }
+        
+        return totalLoss / inputs.length;
+    }
+    
+    /**
+     * Compute classification accuracy
+     * 
+     * @param inputs Array of input samples
+     * @param labels Array of true labels (class indices)
+     * @return Accuracy (0.0 to 1.0)
+     */
+    public double computeAccuracy(double[][] inputs, int[][] labels) {
+        if (inputs.length != labels.length) {
+            throw new IllegalArgumentException("Number of inputs and labels must match");
+        }
+        
+        int correct = 0;
+        
+        for (int i = 0; i < inputs.length; i++) {
+            double[] prediction = predict(inputs[i]);
+            int predictedClass = argMax(prediction);
+            int trueClass = labels[i][0];
+            
+            if (predictedClass == trueClass) {
+                correct++;
+            }
+        }
+        
+        return (double) correct / inputs.length;
+    }
+    
+    /**
+     * Compute precision for a specific class
+     * 
+     * Precision = TP / (TP + FP)
+     * 
+     * @param inputs Array of input samples
+     * @param labels Array of true labels (class indices)
+     * @param classIndex The class index to compute precision for
+     * @return Precision (0.0 to 1.0)
+     */
+    public double computePrecision(double[][] inputs, int[][] labels, int classIndex) {
+        if (inputs.length != labels.length) {
+            throw new IllegalArgumentException("Number of inputs and labels must match");
+        }
+        
+        int truePositives = 0;
+        int falsePositives = 0;
+        
+        for (int i = 0; i < inputs.length; i++) {
+            double[] prediction = predict(inputs[i]);
+            int predictedClass = argMax(prediction);
+            int trueClass = labels[i][0];
+            
+            if (predictedClass == classIndex && trueClass == classIndex) {
+                truePositives++;
+            } else if (predictedClass == classIndex && trueClass != classIndex) {
+                falsePositives++;
+            }
+        }
+        
+        if (truePositives + falsePositives == 0) {
+            return 0.0;
+        }
+        
+        return (double) truePositives / (truePositives + falsePositives);
+    }
+    
+    /**
+     * Compute recall for a specific class
+     * 
+     * Recall = TP / (TP + FN)
+     * 
+     * @param inputs Array of input samples
+     * @param labels Array of true labels (class indices)
+     * @param classIndex The class index to compute recall for
+     * @return Recall (0.0 to 1.0)
+     */
+    public double computeRecall(double[][] inputs, int[][] labels, int classIndex) {
+        if (inputs.length != labels.length) {
+            throw new IllegalArgumentException("Number of inputs and labels must match");
+        }
+        
+        int truePositives = 0;
+        int falseNegatives = 0;
+        
+        for (int i = 0; i < inputs.length; i++) {
+            double[] prediction = predict(inputs[i]);
+            int predictedClass = argMax(prediction);
+            int trueClass = labels[i][0];
+            
+            if (predictedClass == classIndex && trueClass == classIndex) {
+                truePositives++;
+            } else if (predictedClass != classIndex && trueClass == classIndex) {
+                falseNegatives++;
+            }
+        }
+        
+        if (truePositives + falseNegatives == 0) {
+            return 0.0;
+        }
+        
+        return (double) truePositives / (truePositives + falseNegatives);
+    }
+    
+    /**
+     * Compute F1 score for a specific class
+     * 
+     * F1 = 2 * (Precision * Recall) / (Precision + Recall)
+     * 
+     * @param inputs Array of input samples
+     * @param labels Array of true labels (class indices)
+     * @param classIndex The class index to compute F1 score for
+     * @return F1 score (0.0 to 1.0)
+     */
+    public double computeF1Score(double[][] inputs, int[][] labels, int classIndex) {
+        double precision = computePrecision(inputs, labels, classIndex);
+        double recall = computeRecall(inputs, labels, classIndex);
+        
+        if (precision + recall == 0) {
+            return 0.0;
+        }
+        
+        return 2 * (precision * recall) / (precision + recall);
+    }
+    
+    /**
+     * Compute confusion matrix
+     * 
+     * confusionMatrix[i][j] = number of samples with true class i predicted as class j
+     * 
+     * @param inputs Array of input samples
+     * @param labels Array of true labels (class indices)
+     * @return 2D confusion matrix
+     */
+    public int[][] computeConfusionMatrix(double[][] inputs, int[][] labels) {
+        if (inputs.length != labels.length) {
+            throw new IllegalArgumentException("Number of inputs and labels must match");
+        }
+        
+        int[][] confusionMatrix = new int[outputSize][outputSize];
+        
+        for (int i = 0; i < inputs.length; i++) {
+            double[] prediction = predict(inputs[i]);
+            int predictedClass = argMax(prediction);
+            int trueClass = labels[i][0];
+            
+            if (trueClass >= 0 && trueClass < outputSize && 
+                predictedClass >= 0 && predictedClass < outputSize) {
+                confusionMatrix[trueClass][predictedClass]++;
+            }
+        }
+        
+        return confusionMatrix;
+    }
+    
+    private int argMax(double[] array) {
+        int maxIndex = 0;
+        double maxValue = array[0];
+        
+        for (int i = 1; i < array.length; i++) {
+            if (array[i] > maxValue) {
+                maxValue = array[i];
+                maxIndex = i;
+            }
+        }
+        
+        return maxIndex;
     }
     
     /**
@@ -639,16 +808,27 @@ public class FlexNet {
      * @return Training history (MSE per epoch)
      */
     public double[] trainEpochs(double[][] inputs, double[][] targets, int epochs) {
+        return trainEpochs(inputs, targets, epochs, lossType);
+    }
+    
+    /**
+     * Train the network for a specified number of epochs with specified loss type
+     * 
+     * @param inputs Training inputs
+     * @param targets Training targets
+     * @param epochs Number of training epochs
+     * @param lossType The loss function to use
+     * @return Training history (loss per epoch)
+     */
+    public double[] trainEpochs(double[][] inputs, double[][] targets, int epochs, LossType lossType) {
         double[] history = new double[epochs];
         
         for (int epoch = 0; epoch < epochs; epoch++) {
-            // Shuffle training data
             int[] indices = new int[inputs.length];
             for (int i = 0; i < indices.length; i++) {
                 indices[i] = i;
             }
             
-            // Fisher-Yates shuffle
             for (int i = indices.length - 1; i > 0; i--) {
                 int j = random.nextInt(i + 1);
                 int temp = indices[i];
@@ -656,7 +836,6 @@ public class FlexNet {
                 indices[j] = temp;
             }
             
-            // Create shuffled arrays
             double[][] shuffledInputs = new double[inputs.length][];
             double[][] shuffledTargets = new double[targets.length][];
             
@@ -665,11 +844,13 @@ public class FlexNet {
                 shuffledTargets[i] = targets[indices[i]];
             }
             
-            // Train on shuffled data
-            train(shuffledInputs, shuffledTargets);
+            train(shuffledInputs, shuffledTargets, lossType);
             
-            // Compute MSE for this epoch
-            history[epoch] = computeMSE(inputs, targets);
+            if (lossType == LossType.MSE) {
+                history[epoch] = computeMSE(inputs, targets);
+            } else {
+                history[epoch] = computeCrossEntropy(inputs, targets);
+            }
         }
         
         return history;
@@ -678,26 +859,13 @@ public class FlexNet {
     /**
      * Save the model to a file
      * 
-     * File format:
-     * - inputSize
-     * - hiddenLayers (comma-separated)
-     * - outputSize
-     * - activations (comma-separated)
-     * - learningRate
-     * - momentum
-     * - regularization
-     * - batchSize
-     * - weights and biases
-     * 
      * @param filePath Path to save the model
      * @throws IOException If file cannot be written
      */
     public void saveModel(String filePath) throws IOException {
         try (PrintWriter writer = new PrintWriter(new FileWriter(filePath))) {
-            // Save architecture
             writer.println(inputSize);
             
-            // Save hidden layers
             writer.println(hiddenLayers.length);
             for (int size : hiddenLayers) {
                 writer.println(size);
@@ -705,22 +873,21 @@ public class FlexNet {
             
             writer.println(outputSize);
             
-            // Save activations
             writer.println(activations.length);
             for (String activation : activations) {
                 writer.println(activation);
             }
             
-            // Save hyperparameters
             writer.println(learningRate);
             writer.println(momentum);
             writer.println(regularization);
             writer.println(batchSize);
             
-            // Save weights
+            writer.println(lossType.name());
+            
             for (int l = 0; l < weights.length; l++) {
-                writer.println(weights[l].length);  // Number of neurons
-                writer.println(weights[l][0].length);  // Number of inputs
+                writer.println(weights[l].length);
+                writer.println(weights[l][0].length);
                 
                 for (int n = 0; n < weights[l].length; n++) {
                     for (int i = 0; i < weights[l][n].length; i++) {
@@ -729,7 +896,6 @@ public class FlexNet {
                 }
             }
             
-            // Save biases
             for (int l = 0; l < biases.length; l++) {
                 writer.println(biases[l].length);
                 for (int n = 0; n < biases[l].length; n++) {
@@ -748,7 +914,6 @@ public class FlexNet {
      */
     public static FlexNet loadModel(String filePath) throws IOException {
         try (BufferedReader reader = new BufferedReader(new FileReader(filePath))) {
-            // Load architecture
             int inputSize = Integer.parseInt(reader.readLine().trim());
             
             int numHidden = Integer.parseInt(reader.readLine().trim());
@@ -759,25 +924,24 @@ public class FlexNet {
             
             int outputSize = Integer.parseInt(reader.readLine().trim());
             
-            // Load activations
             int numActivations = Integer.parseInt(reader.readLine().trim());
             String[] activations = new String[numActivations];
             for (int i = 0; i < numActivations; i++) {
                 activations[i] = reader.readLine().trim();
             }
             
-            // Load hyperparameters
             double learningRate = Double.parseDouble(reader.readLine().trim());
             double momentum = Double.parseDouble(reader.readLine().trim());
             double regularization = Double.parseDouble(reader.readLine().trim());
             int batchSize = Integer.parseInt(reader.readLine().trim());
             
-            // Create network
+            LossType lossType = LossType.valueOf(reader.readLine().trim());
+            
             FlexNet network = new FlexNet(inputSize, hiddenLayers, outputSize,
                                           activations, learningRate, momentum,
                                           regularization, batchSize);
+            network.setLossType(lossType);
             
-            // Load weights
             for (int l = 0; l < network.weights.length; l++) {
                 int numNeurons = Integer.parseInt(reader.readLine().trim());
                 int numInputs = Integer.parseInt(reader.readLine().trim());
@@ -789,7 +953,6 @@ public class FlexNet {
                 }
             }
             
-            // Load biases
             for (int l = 0; l < network.biases.length; l++) {
                 int numBiases = Integer.parseInt(reader.readLine().trim());
                 for (int n = 0; n < numBiases; n++) {
@@ -813,9 +976,6 @@ public class FlexNet {
     /**
      * Set the learning rate
      * 
-     * The learning rate controls the step size during gradient descent.
-     * Typical values: 0.001 to 1.0
-     * 
      * @param learningRate New learning rate
      */
     public void setLearningRate(double learningRate) {
@@ -836,10 +996,6 @@ public class FlexNet {
     
     /**
      * Set the momentum coefficient
-     * 
-     * Momentum helps accelerate gradient descent by adding a fraction
-     * of the previous gradient update to the current update.
-     * Typical values: 0.0 to 0.99
      * 
      * @param momentum New momentum coefficient
      */
@@ -862,9 +1018,7 @@ public class FlexNet {
     /**
      * Set the regularization strength
      * 
-     * L2 regularization adds a penalty term to the loss function:
-     * L_total = L_original + λ * Σ(w²)
-     * This helps prevent overfitting by penalizing large weights.
+     * L2 regularization adds a penalty term: L_total = L_original + λ * Σ(w²)
      * 
      * @param regularization New regularization strength
      */
@@ -887,12 +1041,6 @@ public class FlexNet {
     /**
      * Set the batch size
      * 
-     * Batch size determines how many samples are processed before
-     * updating weights:
-     * - 1: Stochastic Gradient Descent (SGD)
-     * - n (full dataset): Batch Gradient Descent
-     * - Other: Mini-batch Gradient Descent
-     * 
      * @param batchSize New batch size
      */
     public void setBatchSize(int batchSize) {
@@ -900,6 +1048,24 @@ public class FlexNet {
             throw new IllegalArgumentException("Batch size must be positive");
         }
         this.batchSize = batchSize;
+    }
+    
+    /**
+     * Get the loss type
+     * 
+     * @return Current loss type
+     */
+    public LossType getLossType() {
+        return lossType;
+    }
+    
+    /**
+     * Set the loss type
+     * 
+     * @param lossType New loss type
+     */
+    public void setLossType(LossType lossType) {
+        this.lossType = lossType;
     }
     
     /**
@@ -949,7 +1115,6 @@ public class FlexNet {
     
     /**
      * Reset momentum velocities to zero
-     * Useful when restarting training
      */
     public void resetMomentum() {
         for (int l = 0; l < velocityW.length; l++) {
@@ -969,8 +1134,8 @@ public class FlexNet {
         int total = 0;
         
         for (int l = 0; l < weights.length; l++) {
-            total += weights[l].length * weights[l][0].length;  // Weights
-            total += biases[l].length;  // Biases
+            total += weights[l].length * weights[l][0].length;
+            total += biases[l].length;
         }
         
         return total;
@@ -998,6 +1163,7 @@ public class FlexNet {
         System.out.println("Momentum: " + momentum);
         System.out.println("Regularization: " + regularization);
         System.out.println("Batch Size: " + batchSize);
+        System.out.println("Loss Type: " + lossType);
         System.out.println("Total Parameters: " + getTotalParameters());
     }
     
@@ -1008,10 +1174,8 @@ public class FlexNet {
         System.out.println("FlexNet - Neural Network Demonstration");
         System.out.println("========================================\n");
         
-        // Create a simple network for XOR problem
-        // XOR requires at least one hidden layer with sufficient neurons
         int inputSize = 2;
-        int[] hiddenLayers = {4};  // 4 neurons in hidden layer
+        int[] hiddenLayers = {4};
         int outputSize = 1;
         String[] activations = {"tanh", "sigmoid"};
         
@@ -1021,7 +1185,6 @@ public class FlexNet {
         network.printArchitecture();
         System.out.println();
         
-        // XOR training data
         double[][] inputs = {
             {0, 0},
             {0, 1},
@@ -1038,13 +1201,11 @@ public class FlexNet {
         
         System.out.println("Training XOR problem...");
         
-        // Train for multiple epochs
         double[] losses = network.trainEpochs(inputs, targets, 10000);
         
         System.out.println("Final MSE: " + losses[losses.length - 1]);
         System.out.println("\nPredictions after training:");
         
-        // Test predictions
         for (int i = 0; i < inputs.length; i++) {
             double[] prediction = network.predict(inputs[i]);
             System.out.printf("Input: [%d, %d] -> Output: %.4f (Target: %.0f)%n",
@@ -1052,7 +1213,6 @@ public class FlexNet {
                             prediction[0], targets[i][0]);
         }
         
-        // Test save/load functionality
         try {
             network.saveModel("FlexNet_xor_model.txt");
             System.out.println("\nModel saved to FlexNet_xor_model.txt");
@@ -1060,7 +1220,6 @@ public class FlexNet {
             FlexNet loadedNetwork = FlexNet.loadModel("FlexNet_xor_model.txt");
             System.out.println("Model loaded successfully");
             
-            // Verify loaded network produces same results
             double[] pred1 = network.predict(inputs[0]);
             double[] pred2 = loadedNetwork.predict(inputs[0]);
             System.out.printf("Verification: Original: %.4f, Loaded: %.4f%n", 
@@ -1070,7 +1229,6 @@ public class FlexNet {
             System.err.println("Error saving/loading model: " + e.getMessage());
         }
         
-        // Demonstrate regression with a simple function
         System.out.println("\n========================================");
         System.out.println("Regression Demonstration: f(x) = sin(x)");
         System.out.println("========================================");
@@ -1079,27 +1237,23 @@ public class FlexNet {
         double[][] regInputs = new double[numSamples][1];
         double[][] regTargets = new double[numSamples][1];
         
-        // Generate training data: x in [-π, π], y = sin(x)
         for (int i = 0; i < numSamples; i++) {
             double x = -Math.PI + (2 * Math.PI * i) / (numSamples - 1);
             regInputs[i][0] = x;
             regTargets[i][0] = Math.sin(x);
         }
         
-        // Create network for regression
         FlexNet regNetwork = new FlexNet(1, new int[]{16, 16}, 1,
                                          new String[]{"tanh", "tanh", "linear"},
                                          0.01, 0.0, 0.0001, 16);
         
         System.out.println("Training regression network...");
         
-        // Train
         regNetwork.trainEpochs(regInputs, regTargets, 500);
         
         double mse = regNetwork.computeMSE(regInputs, regTargets);
         System.out.println("Final MSE: " + mse);
         
-        // Test predictions
         System.out.println("\nTest predictions:");
         double[] testPoints = {-Math.PI, -Math.PI/2, 0, Math.PI/2, Math.PI};
         for (double x : testPoints) {
