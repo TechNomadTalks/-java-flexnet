@@ -1,0 +1,12 @@
+FlexNet - A Complete Neural Network Implementation in Pure Java
+This repository contains a fully functional multi-layer perceptron (MLP) neural network implemented entirely from scratch in Java, without using any external libraries such as ND4J, DeepLearning4J, TensorFlow, or PyTorch.
+All functionality including feedforward computation, backpropagation, gradient descent optimization, and model persistence has been implemented using only standard Java libraries (java.util, java.io).
+Key Features Implemented:
+The neural network supports multiple hidden layers with configurable neuron counts, allowing for both shallow and deep architectures. Four activation functions are available including sigmoid, hyperbolic tangent (tanh), rectified linear unit (ReLU), and linear activation. Weight initialization uses appropriate methods for each activation type: Xavier/Glorot initialization for sigmoid and tanh, and He initialization for ReLU.
+The training system includes full backpropagation with the chain rule for gradient computation, stochastic gradient descent (SGD), mini-batch gradient descent, and batch gradient descent options. Momentum-based gradient descent helps accelerate convergence and escape local minima. L2 regularization (weight decay) is included to prevent overfitting.
+Mathematical Implementation:
+The feedforward pass computes outputs layer by layer using matrix multiplication and bias addition followed by non-linear activation functions. The backpropagation algorithm computes gradients by propagating error signals backward through the network using the chain rule of calculus. Each weight update uses the computed gradients scaled by the learning rate, with optional momentum and regularization terms.
+Demo and Testing:
+A comprehensive demonstration program (Demo.java) showcases training on the XOR problem, which requires a non-linear decision boundary and demonstrates the network's ability to learn complex patterns. The demo includes examples of predictions before and after training, comparison of different activation functions and network architectures, and verification of model save and load functionality.
+Usage:
+Simply compile the Java files and run the Demo class to see the neural network learn the XOR problem. The FlexNet class can be reused for any fully connected neural network task by specifying the input size, hidden layer configuration, output size, and activation functions.
