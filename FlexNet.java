@@ -20,7 +20,8 @@ import java.util.*;
 
 enum LossType {
     MSE,
-    CROSS_ENTROPY
+    CROSS_ENTROPY,
+    MAE
 }
 
 public class FlexNet {
@@ -386,6 +387,13 @@ public class FlexNet {
             for (int n = 0; n < outputSize; n++) {
                 deltas[outputLayer][n] = output[n] - target[n];
             }
+        } else if (lossType == LossType.MAE) {
+            for (int n = 0; n < outputSize; n++) {
+                double error = output[n] - target[n];
+                double sign = (error > 0) ? 1.0 : (error < 0) ? -1.0 : 0.0;
+                deltas[outputLayer][n] = sign * activationDerivative(
+                    preActivations[outputLayer][n], activations[outputLayer]);
+            }
         } else if (lossType == LossType.CROSS_ENTROPY) {
             for (int n = 0; n < outputSize; n++) {
                 double error = output[n] - target[n];
@@ -511,6 +519,13 @@ public class FlexNet {
                     for (int n = 0; n < outputSize; n++) {
                         deltas[outputLayer][n] = output[n] - targets[i][n];
                     }
+                } else if (lossType == LossType.MAE) {
+                    for (int n = 0; n < outputSize; n++) {
+                        double error = output[n] - targets[i][n];
+                        double sign = (error > 0) ? 1.0 : (error < 0) ? -1.0 : 0.0;
+                        deltas[outputLayer][n] = sign * activationDerivative(
+                            preActivations[outputLayer][n], activations[outputLayer]);
+                    }
                 } else if (lossType == LossType.CROSS_ENTROPY) {
                     for (int n = 0; n < outputSize; n++) {
                         double error = output[n] - targets[i][n];
@@ -623,6 +638,33 @@ public class FlexNet {
             for (int j = 0; j < targets[i].length; j++) {
                 double error = prediction[j] - targets[i][j];
                 totalError += error * error;
+            }
+        }
+        
+        return totalError / inputs.length;
+    }
+    
+    /**
+     * Compute Mean Absolute Error loss
+     * 
+     * MAE = (1/n) * Σ|y_true - y_pred|
+     * 
+     * @param inputs Array of input samples
+     * @param targets Array of target outputs
+     * @return Mean Absolute Error
+     */
+    public double computeMAE(double[][] inputs, double[][] targets) {
+        if (inputs.length != targets.length) {
+            throw new IllegalArgumentException("Number of inputs and targets must match");
+        }
+        
+        double totalError = 0.0;
+        
+        for (int i = 0; i < inputs.length; i++) {
+            double[] prediction = predict(inputs[i]);
+            
+            for (int j = 0; j < targets[i].length; j++) {
+                totalError += Math.abs(prediction[j] - targets[i][j]);
             }
         }
         
@@ -873,6 +915,8 @@ public class FlexNet {
             
             if (lossType == LossType.MSE) {
                 history[epoch] = computeMSE(inputs, targets);
+            } else if (lossType == LossType.MAE) {
+                history[epoch] = computeMAE(inputs, targets);
             } else {
                 history[epoch] = computeCrossEntropy(inputs, targets);
             }
