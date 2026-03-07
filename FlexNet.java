@@ -53,6 +53,17 @@ public class FlexNet {
     private double gradientClipThreshold;
     private double huberDelta;
     
+    // Adam optimizer
+    private boolean useAdam;
+    private double adamBeta1;
+    private double adamBeta2;
+    private double adamEpsilon;
+    private int adamT;
+    private double[][][] mW;
+    private double[][] mB;
+    private double[][][] vW;
+    private double[][] vB;
+    
     private LearningRateSchedule lrSchedule;
     private double initialLearningRate;
     private int stepSize;
@@ -119,6 +130,11 @@ public class FlexNet {
         this.bestValidationLoss = Double.MAX_VALUE;
         this.epochsWithoutImprovement = 0;
         this.earlyStoppingTriggered = false;
+        this.useAdam = false;
+        this.adamBeta1 = 0.9;
+        this.adamBeta2 = 0.999;
+        this.adamEpsilon = 1e-8;
+        this.adamT = 0;
         this.random = new Random();
         this.lossType = LossType.MSE;
         
@@ -485,18 +501,48 @@ public class FlexNet {
             for (int n = 0; n < weights[l].length; n++) {
                 double delta = deltas[l][n];
                 
-                velocityB[l][n] = momentum * velocityB[l][n] - learningRate * delta;
-                biases[l][n] += velocityB[l][n];
-                
-                for (int i = 0; i < weights[l][n].length; i++) {
-                    double gradient = delta * prevActivations[i] + 
-                                     regularization * weights[l][n][i];
+                if (useAdam) {
+                    // Adam update for bias
+                    mB[l][n] = adamBeta1 * mB[l][n] + (1 - adamBeta1) * delta;
+                    vB[l][n] = adamBeta2 * vB[l][n] + (1 - adamBeta2) * delta * delta;
                     
-                    velocityW[l][n][i] = momentum * velocityW[l][n][i] - 
-                                         learningRate * gradient;
-                    weights[l][n][i] += velocityW[l][n][i];
+                    double mHat = mB[l][n] / (1 - Math.pow(adamBeta1, adamT + 1));
+                    double vHat = vB[l][n] / (1 - Math.pow(adamBeta2, adamT + 1));
+                    
+                    biases[l][n] -= learningRate * mHat / (Math.sqrt(vHat) + adamEpsilon);
+                    
+                    // Adam update for weights
+                    for (int i = 0; i < weights[l][n].length; i++) {
+                        double gradient = delta * prevActivations[i];
+                        
+                        mW[l][n][i] = adamBeta1 * mW[l][n][i] + (1 - adamBeta1) * gradient;
+                        vW[l][n][i] = adamBeta2 * vW[l][n][i] + (1 - adamBeta2) * gradient * gradient;
+                        
+                        double mHatW = mW[l][n][i] / (1 - Math.pow(adamBeta1, adamT + 1));
+                        double vHatW = vW[l][n][i] / (1 - Math.pow(adamBeta2, adamT + 1));
+                        
+                        double regGradient = regularization * weights[l][n][i];
+                        weights[l][n][i] -= learningRate * (mHatW / (Math.sqrt(vHatW) + adamEpsilon) + regGradient);
+                    }
+                } else {
+                    // Standard momentum update
+                    velocityB[l][n] = momentum * velocityB[l][n] - learningRate * delta;
+                    biases[l][n] += velocityB[l][n];
+                    
+                    for (int i = 0; i < weights[l][n].length; i++) {
+                        double gradient = delta * prevActivations[i] + 
+                                         regularization * weights[l][n][i];
+                        
+                        velocityW[l][n][i] = momentum * velocityW[l][n][i] - 
+                                             learningRate * gradient;
+                        weights[l][n][i] += velocityW[l][n][i];
+                    }
                 }
             }
+        }
+        
+        if (useAdam) {
+            adamT++;
         }
     }
     
@@ -637,33 +683,80 @@ public class FlexNet {
                 }
             }
             
+            // Update weights after accumulating gradients
+            double scale = 1.0 / batchActualSize;
+            adamT++;
+            
             for (int l = 0; l < numLayers; l++) {
                 for (int n = 0; n < weights[l].length; n++) {
-                    double avgGradB = gradB[l][n] / batchActualSize;
+                    double avgGradB = gradB[l][n] * scale;
                     
-                    if (gradientClipThreshold > 0) {
-                        avgGradB = clipGradient(avgGradB);
-                    }
-                    
-                    velocityB[l][n] = momentum * velocityB[l][n] - 
-                                     learningRate * avgGradB;
-                    biases[l][n] += velocityB[l][n];
-                    
-                    for (int i2 = 0; i2 < weights[l][n].length; i2++) {
-                        double avgGradW = gradW[l][n][i2] / batchActualSize +
-                                         regularization * weights[l][n][i2];
+                    if (useAdam) {
+                        // Adam update for bias
+                        mB[l][n] = adamBeta1 * mB[l][n] + (1 - adamBeta1) * avgGradB;
+                        vB[l][n] = adamBeta2 * vB[l][n] + (1 - adamBeta2) * avgGradB * avgGradB;
                         
-                        if (gradientClipThreshold > 0) {
-                            avgGradW = clipGradient(avgGradW);
+                        double mHat = mB[l][n] / (1 - Math.pow(adamBeta1, adamT));
+                        double vHat = vB[l][n] / (1 - Math.pow(adamBeta2, adamT));
+                        
+                        biases[l][n] -= learningRate * mHat / (Math.sqrt(vHat) + adamEpsilon);
+                        
+                        // Adam update for weights
+                        for (int i2 = 0; i2 < weights[l][n].length; i2++) {
+                            double avgGradW = gradW[l][n][i2] * scale;
+                            
+                            mW[l][n][i2] = adamBeta1 * mW[l][n][i2] + (1 - adamBeta1) * avgGradW;
+                            vW[l][n][i2] = adamBeta2 * vW[l][n][i2] + (1 - adamBeta2) * avgGradW * avgGradW;
+                            
+                            double mHatW = mW[l][n][i2] / (1 - Math.pow(adamBeta1, adamT));
+                            double vHatW = vW[l][n][i2] / (1 - Math.pow(adamBeta2, adamT));
+                            
+                            weights[l][n][i2] -= learningRate * mHatW / (Math.sqrt(vHatW) + adamEpsilon);
                         }
+                    } else {
+                        // Standard momentum update
+                        if (gradientClipThreshold > 0) {
+                            avgGradB = clipGradient(avgGradB);
+                        }
+                        velocityB[l][n] = momentum * velocityB[l][n] - learningRate * avgGradB;
+                        biases[l][n] += velocityB[l][n];
                         
-                        velocityW[l][n][i2] = momentum * velocityW[l][n][i2] - 
-                                             learningRate * avgGradW;
-                        weights[l][n][i2] += velocityW[l][n][i2];
+                        for (int i2 = 0; i2 < weights[l][n].length; i2++) {
+                            double avgGradW = gradW[l][n][i2] * scale + regularization * weights[l][n][i2];
+                            
+                            if (gradientClipThreshold > 0) {
+                                avgGradW = clipGradient(avgGradW);
+                            }
+                            
+                            velocityW[l][n][i2] = momentum * velocityW[l][n][i2] - learningRate * avgGradW;
+                            weights[l][n][i2] += velocityW[l][n][i2];
+                        }
                     }
                 }
             }
         }
+    }
+    
+    private void initializeAdam() {
+        mW = new double[weights.length][][];
+        mB = new double[biases.length][];
+        vW = new double[weights.length][][];
+        vB = new double[biases.length][];
+        
+        for (int l = 0; l < weights.length; l++) {
+            mW[l] = new double[weights[l].length][];
+            mB[l] = new double[biases[l].length];
+            vW[l] = new double[weights[l].length][];
+            vB[l] = new double[biases[l].length];
+            
+            for (int n = 0; n < weights[l].length; n++) {
+                mW[l][n] = new double[weights[l][n].length];
+                vW[l][n] = new double[weights[l][n].length];
+            }
+            Arrays.fill(mB[l], 0.0);
+            Arrays.fill(vB[l], 0.0);
+        }
+        adamT = 0;
     }
     
     /**
@@ -1327,6 +1420,72 @@ public class FlexNet {
             default:
                 return initialLearningRate;
         }
+    }
+    
+    /**
+     * Enable Adam optimizer
+     * 
+     * Adam (Adaptive Moment Estimation) combines momentum with RMSProp
+     * - Uses first moment (momentum-like) and second moment (RMSProp-like)
+     * - Bias correction for accurate estimates early in training
+     * 
+     * @param learningRate Learning rate for Adam
+     */
+    public void enableAdam(double learningRate) {
+        this.useAdam = true;
+        this.learningRate = learningRate;
+        this.initialLearningRate = learningRate;
+        
+        if (weights != null) {
+            initializeAdam();
+        }
+    }
+    
+    /**
+     * Enable Adam with custom hyperparameters
+     * 
+     * @param learningRate Learning rate
+     * @param beta1 First moment decay (typically 0.9)
+     * @param beta2 Second moment decay (typically 0.999)
+     * @param epsilon Small constant for numerical stability (typically 1e-8)
+     */
+    public void enableAdam(double learningRate, double beta1, double beta2, double epsilon) {
+        if (beta1 <= 0 || beta1 >= 1) {
+            throw new IllegalArgumentException("Beta1 must be between 0 and 1");
+        }
+        if (beta2 <= 0 || beta2 >= 1) {
+            throw new IllegalArgumentException("Beta2 must be between 0 and 1");
+        }
+        if (epsilon <= 0) {
+            throw new IllegalArgumentException("Epsilon must be positive");
+        }
+        
+        this.useAdam = true;
+        this.learningRate = learningRate;
+        this.initialLearningRate = learningRate;
+        this.adamBeta1 = beta1;
+        this.adamBeta2 = beta2;
+        this.adamEpsilon = epsilon;
+        
+        if (weights != null) {
+            initializeAdam();
+        }
+    }
+    
+    /**
+     * Disable Adam optimizer and use standard momentum
+     */
+    public void disableAdam() {
+        this.useAdam = false;
+    }
+    
+    /**
+     * Check if Adam optimizer is enabled
+     * 
+     * @return True if using Adam
+     */
+    public boolean isUsingAdam() {
+        return useAdam;
     }
     
     /**
