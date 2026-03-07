@@ -1,23 +1,56 @@
 import java.io.*;
+import java.security.SecureRandom;
 import java.util.*;
+
+import exceptions.InvalidArchitectureException;
+import exceptions.TrainingException;
 
 /**
  * FlexNet - A flexible multi-layer perceptron (fully connected neural network) implementation
  * 
- * This class implements a complete neural network with:
- * - Configurable architecture (input, hidden layers, output)
- * - Multiple activation functions (sigmoid, tanh, relu, linear, elu, softmax)
- * - Xavier/Glorot and He weight initialization
- * - Backpropagation with momentum and L2 regularization
- * - Batch, mini-batch, and stochastic gradient descent
- * - Model serialization/deserialization
- * - Multiple loss functions (MSE, Cross-Entropy)
- * - Training metrics (accuracy, precision, recall, F1, confusion matrix)
+ * <p>This class implements a complete neural network with:
+ * <ul>
+ *   <li>Configurable architecture (input, hidden layers, output)</li>
+ *   <li>Multiple activation functions (sigmoid, tanh, relu, leakyrelu, elu, softmax, linear)</li>
+ *   <li>Xavier/Glorot and He weight initialization</li>
+ *   <li>Backpropagation with momentum, Adam optimizer, and L2 regularization</li>
+ *   <li>Batch, mini-batch, and stochastic gradient descent</li>
+ *   <li>Model serialization/deserialization</li>
+ *   <li>Multiple loss functions (MSE, Cross-Entropy, MAE, Huber)</li>
+ *   <li>Training metrics (accuracy, precision, recall, F1, confusion matrix)</li>
+ *   <li>Learning rate scheduling (step, exponential, cosine annealing)</li>
+ *   <li>Early stopping and gradient clipping</li>
+ * </ul></p>
+ * 
+ * <h2>Usage Example</h2>
+ * <pre>{@code
+ * // Create a network for XOR: 2 inputs, 4 hidden neurons, 1 output
+ * FlexNet net = new FlexNet(2, new int[]{4}, 1, 
+ *                          new String[]{"tanh", "sigmoid"}, 0.5);
+ * 
+ * // Train the network
+ * net.train(inputs, targets, 2000);
+ * 
+ * // Make predictions
+ * double[] prediction = net.predict(new double[]{0.0, 1.0});
+ * System.out.println("Prediction: " + prediction[0]); // Close to 1.0
+ * }</pre>
  * 
  * @author FlexNet Implementation
- * @version 1.1
+ * @version 1.2
+ * @since 1.0
  */
 
+/**
+ * Specifies the loss function used for training the neural network.
+ * 
+ * <ul>
+ *   <li>{@link #MSE} - Mean Squared Error, best for regression tasks</li>
+ *   <li>{@link #CROSS_ENTROPY} - Cross-Entropy, best for classification with softmax</li>
+ *   <li>{@link #MAE} - Mean Absolute Error, robust to outliers</li>
+ *   <li>{@link #HUBER} - Huber loss, combines MSE and MAE benefits</li>
+ * </ul>
+ */
 enum LossType {
     MSE,
     CROSS_ENTROPY,
@@ -81,7 +114,7 @@ public class FlexNet {
     private double[][][] bestWeights;
     private double[][] bestBiases;
     
-    private Random random;
+    private SecureRandom random;
     
     private double[][] preActivations;
     private double[][] postActivations;
@@ -92,17 +125,56 @@ public class FlexNet {
     
     private static final double ELU_ALPHA = 1.0;
     
+    private double dropoutRate;
+    private boolean dropoutEnabled;
+    private double[][] dropoutMasks;
+    private Random dropoutRandom;
+    
     /**
-     * Constructor with all parameters
+     * Creates a new FlexNet neural network with the specified architecture.
      * 
-     * @param inputSize Number of input features
-     * @param hiddenLayers Array of neuron counts for hidden layers
-     * @param outputSize Number of output neurons
-     * @param activations Array of activation functions for each layer (including output)
-     * @param learningRate Learning rate for gradient descent
-     * @param momentum Momentum coefficient (0.0 for no momentum)
+     * <p>This constructor creates a fully-connected (dense) multi-layer perceptron
+     * with configurable hidden layers and activation functions. The network uses
+     * appropriate weight initialization (Xavier/Glorot for sigmoid/tanh, He for ReLU)
+     * based on the specified activation functions.</p>
+     * 
+     * <h3>Supported Activation Functions</h3>
+     * <ul>
+     *   <li>{@code "sigmoid"} - Sigmoid activation, good for binary output</li>
+     *   <li>{@code "tanh"} - Hyperbolic tangent, zero-centered output</li>
+     *   <li>{@code "relu"} - Rectified Linear Unit, default for deep networks</li>
+     *   <li>{@code "leakyrelu"} - Leaky ReLU, prevents dying ReLU problem</li>
+     *   <li>{@code "elu"} - Exponential Linear Unit, smooth activation</li>
+     *   <li>{@code "softmax"} - Softmax, for multi-class classification output</li>
+     *   <li>{@code "linear"} - Identity function, for regression output</li>
+     * </ul>
+     * 
+     * <h3>Example Usage</h3>
+     * <pre>{@code
+     * // Create a network for XOR: 2 inputs, 4 hidden neurons, 1 output
+     * FlexNet net = new FlexNet(2, new int[]{4}, 1, 
+     *                          new String[]{"tanh", "sigmoid"}, 0.5);
+     * 
+     * // Train on XOR data
+     * net.train(inputs, targets, 2000);
+     * 
+     * // Make predictions
+     * double[] prediction = net.predict(new double[]{0.0, 1.0});
+     * }</pre>
+     * 
+     * @param inputSize      Number of input features (must be positive)
+     * @param hiddenLayers   Array specifying neuron counts for each hidden layer
+     *                       (empty array for no hidden layers)
+     * @param outputSize     Number of output neurons (must be positive)
+     * @param activations    Array of activation functions for each layer,
+     *                       including output layer
+     * @param learningRate   Learning rate for gradient descent (must be positive)
+     * @param momentum       Momentum coefficient for SGD (0.0 to 1.0)
      * @param regularization L2 regularization strength (0.0 for no regularization)
-     * @param batchSize Batch size (1 for SGD, n for batch, other for mini-batch)
+     * @param batchSize      Mini-batch size (1 for stochastic, N for mini-batch, 
+     *                       or all data for full-batch)
+     * @throws IllegalArgumentException if inputSize or outputSize is not positive,
+     *         or if learningRate or batchSize is not positive
      */
     public FlexNet(int inputSize, int[] hiddenLayers, int outputSize, 
                    String[] activations, double learningRate, 
@@ -135,7 +207,10 @@ public class FlexNet {
         this.adamBeta2 = 0.999;
         this.adamEpsilon = 1e-8;
         this.adamT = 0;
-        this.random = new Random();
+        this.random = new SecureRandom();
+        this.dropoutRate = 0.5;
+        this.dropoutEnabled = false;
+        this.dropoutRandom = new Random();
         this.lossType = LossType.MSE;
         
         initializeArchitecture();
@@ -197,6 +272,17 @@ public class FlexNet {
             postActivations[l] = new double[size];
             deltas[l] = new double[size];
         }
+        
+        initializeDropoutMasks();
+    }
+    
+    private void initializeDropoutMasks() {
+        int numLayers = weights.length;
+        dropoutMasks = new double[numLayers - 1][];
+        for (int l = 0; l < numLayers - 1; l++) {
+            int layerSize = weights[l].length;
+            dropoutMasks[l] = new double[layerSize];
+        }
     }
     
     /**
@@ -238,19 +324,32 @@ public class FlexNet {
     }
     
     /**
-     * Feedforward computation - computes the network output for given input
+     * Performs inference on a single input sample.
      * 
-     * For each layer l:
-     *   z_l = W_l * a_{l-1} + b_l    (pre-activation)
-     *   a_l = activation(z_l)       (post-activation)
+     * <p>This method runs a complete forward pass through all network layers.
+     * It applies the specified activation functions at each layer and returns
+     * the final output predictions.</p>
      * 
-     * @param input Input features (size inputSize)
-     * @return Output predictions (size outputSize)
+     * <p>For each layer l:</p>
+     * <ul>
+     *   <li>z_l = W_l * a_{l-1} + b_l (pre-activation)</li>
+     *   <li>a_l = activation(z_l) (post-activation)</li>
+     * </ul>
+     * 
+     * <p>Note: This method modifies internal state (preActivations, postActivations)
+     * which is used by training methods. Do not call predict() concurrently from
+     * multiple threads without proper synchronization.</p>
+     * 
+     * @param input Array of input features with size equal to inputSize
+     * @return Array of output predictions with size equal to outputSize
+     * @throws IllegalArgumentException if input.length != inputSize
+     * @throws InvalidArchitectureException if input dimensions are invalid
      */
     public double[] predict(double[] input) {
         if (input.length != inputSize) {
-            throw new IllegalArgumentException("Input size mismatch. Expected " + inputSize + 
-                                               ", got " + input.length);
+            throw new InvalidArchitectureException(
+                "Input size mismatch. Expected " + inputSize + ", got " + input.length,
+                "inputSize=" + inputSize + ", provided=" + input.length);
         }
         
         postActivations[0] = input.clone();
@@ -272,6 +371,10 @@ public class FlexNet {
             }
             
             postActivations[l] = applyActivation(preActivations[l], activations[l]);
+            
+            if (dropoutEnabled && l < numLayers - 1) {
+                applyDropout(l);
+            }
         }
         
         return postActivations[numLayers - 1].clone();
@@ -361,6 +464,19 @@ public class FlexNet {
         }
         
         return result;
+    }
+    
+    private void applyDropout(int layer) {
+        double scale = 1.0 / (1.0 - dropoutRate);
+        for (int n = 0; n < dropoutMasks[layer].length; n++) {
+            if (dropoutRandom.nextDouble() < dropoutRate) {
+                dropoutMasks[layer][n] = 0.0;
+                postActivations[layer][n] = 0.0;
+            } else {
+                dropoutMasks[layer][n] = scale;
+                postActivations[layer][n] *= scale;
+            }
+        }
     }
     
     /**
@@ -488,6 +604,10 @@ public class FlexNet {
                 
                 deltas[l][n] = errorSum * activationDerivative(
                     preActivations[l][n], activations[l]);
+                
+                if (dropoutEnabled && l < numLayers - 1) {
+                    deltas[l][n] *= dropoutMasks[l][n];
+                }
             }
         }
         
@@ -570,6 +690,10 @@ public class FlexNet {
             throw new IllegalArgumentException("Number of inputs and targets must match");
         }
         
+        if (inputs.length == 0) {
+            throw new IllegalArgumentException("Input arrays cannot be empty");
+        }
+        
         if (batchSize <= 0) {
             throw new IllegalArgumentException("Batch size must be positive");
         }
@@ -596,6 +720,10 @@ public class FlexNet {
             int startIdx = batch * batchSize;
             int endIdx = Math.min(startIdx + batchSize, numSamples);
             int batchActualSize = endIdx - startIdx;
+            
+            if (batchActualSize <= 0) {
+                continue;
+            }
             
             for (int l = 0; l < weights.length; l++) {
                 for (int n = 0; n < weights[l].length; n++) {
@@ -663,6 +791,10 @@ public class FlexNet {
                         
                         deltas[l][n] = errorSum * activationDerivative(
                             preActivations[l][n], activations[l]);
+                        
+                        if (dropoutEnabled && l < numLayers - 1) {
+                            deltas[l][n] *= dropoutMasks[l][n];
+                        }
                     }
                 }
                 
@@ -775,17 +907,23 @@ public class FlexNet {
     }
     
     /**
-     * Compute Mean Squared Error loss
+     * Computes the Mean Squared Error (MSE) loss on a dataset.
      * 
-     * MSE = (1/n) * Σ(y_true - y_pred)²
+     * <p>MSE is commonly used for regression tasks:</p>
+     * <pre>MSE = (1/n) * Σ(y_true - y_pred)²</pre>
      * 
-     * @param inputs Array of input samples
-     * @param targets Array of target outputs
+     * @param inputs  Input samples with shape [numSamples, inputSize]
+     * @param targets True target values with shape [numSamples, outputSize]
      * @return Mean Squared Error
+     * @throws IllegalArgumentException if inputs.length != targets.length
      */
     public double computeMSE(double[][] inputs, double[][] targets) {
         if (inputs.length != targets.length) {
             throw new IllegalArgumentException("Number of inputs and targets must match");
+        }
+        
+        if (inputs.length == 0) {
+            throw new IllegalArgumentException("Input arrays cannot be empty");
         }
         
         double totalError = 0.0;
@@ -814,6 +952,10 @@ public class FlexNet {
     public double computeMAE(double[][] inputs, double[][] targets) {
         if (inputs.length != targets.length) {
             throw new IllegalArgumentException("Number of inputs and targets must match");
+        }
+        
+        if (inputs.length == 0) {
+            throw new IllegalArgumentException("Input arrays cannot be empty");
         }
         
         double totalError = 0.0;
@@ -845,6 +987,10 @@ public class FlexNet {
             throw new IllegalArgumentException("Number of inputs and targets must match");
         }
         
+        if (inputs.length == 0) {
+            throw new IllegalArgumentException("Input arrays cannot be empty");
+        }
+        
         double totalError = 0.0;
         double delta = huberDelta;
         
@@ -867,17 +1013,25 @@ public class FlexNet {
     }
     
     /**
-     * Compute Cross-Entropy loss
+     * Computes the Cross-Entropy loss on a dataset.
      * 
-     * L = -sum(y_true * log(y_pred))
+     * <p>Cross-Entropy is used for classification tasks, especially with softmax:<pre>L = -</p>
+     * Σ(y_true * log(y_pred))</pre>
      * 
-     * @param inputs Array of input samples
-     * @param targets Array of target outputs (one-hot encoded or class indices)
+     * <p>An epsilon value is used to prevent log(0) numerical instability.</p>
+     * 
+     * @param inputs  Input samples
+     * @param targets True target values (one-hot encoded for multi-class)
      * @return Cross-Entropy loss
+     * @throws IllegalArgumentException if inputs.length != targets.length
      */
     public double computeCrossEntropy(double[][] inputs, double[][] targets) {
         if (inputs.length != targets.length) {
             throw new IllegalArgumentException("Number of inputs and targets must match");
+        }
+        
+        if (inputs.length == 0) {
+            throw new IllegalArgumentException("Input arrays cannot be empty");
         }
         
         double totalLoss = 0.0;
@@ -896,15 +1050,24 @@ public class FlexNet {
     }
     
     /**
-     * Compute classification accuracy
+     * Computes classification accuracy on a dataset.
      * 
-     * @param inputs Array of input samples
-     * @param labels Array of true labels (class indices)
-     * @return Accuracy (0.0 to 1.0)
+     * <p>For multi-class classification, the predicted class is the index with
+     * the highest probability (argmax). The accuracy is the fraction of correctly
+     * classified samples.</p>
+     * 
+     * @param inputs Input samples with shape [numSamples, inputSize]
+     * @param labels True class indices with shape [numSamples, 1]
+     * @return Accuracy as a value between 0.0 and 1.0
+     * @throws IllegalArgumentException if inputs.length != labels.length
      */
     public double computeAccuracy(double[][] inputs, int[][] labels) {
         if (inputs.length != labels.length) {
             throw new IllegalArgumentException("Number of inputs and labels must match");
+        }
+        
+        if (inputs.length == 0) {
+            throw new IllegalArgumentException("Input arrays cannot be empty");
         }
         
         int correct = 0;
@@ -1062,24 +1225,33 @@ public class FlexNet {
     }
     
     /**
-     * Train the network for a specified number of epochs
+     * Trains the network for a specified number of epochs.
      * 
-     * @param inputs Training inputs
-     * @param targets Training targets
-     * @param epochs Number of training epochs
-     * @return Training history (MSE per epoch)
+     * <p>This is the main training method that handles epoch management, learning
+     * rate scheduling, early stopping, and training history collection. Training
+     * data is shuffled at the beginning of each epoch for better generalization.</p>
+     * 
+     * <p>Training progress is logged to stdout. To disable logging, redirect stdout
+     * or modify the implementation.</p>
+     * 
+     * @param inputs  Training input samples with shape [numSamples, inputSize]
+     * @param targets Training target values with shape [numSamples, outputSize]
+     * @param epochs  Number of training epochs (must be positive)
+     * @return Array of loss values, one per epoch (type depends on configured loss function)
+     * @throws IllegalArgumentException if inputs/targets dimensions don't match
+     *         or if epochs is not positive
      */
     public double[] trainEpochs(double[][] inputs, double[][] targets, int epochs) {
         return trainEpochs(inputs, targets, epochs, lossType);
     }
     
     /**
-     * Train the network for a specified number of epochs with specified loss type
+     * Trains the network for a specified number of epochs with a specific loss function.
      * 
-     * @param inputs Training inputs
-     * @param targets Training targets
-     * @param epochs Number of training epochs
-     * @param lossType The loss function to use
+     * @param inputs   Training input samples
+     * @param targets  Training target values
+     * @param epochs   Number of training epochs
+     * @param lossType The loss function to use for training
      * @return Training history (loss per epoch)
      */
     public double[] trainEpochs(double[][] inputs, double[][] targets, int epochs, LossType lossType) {
@@ -1157,12 +1329,60 @@ public class FlexNet {
     }
     
     /**
-     * Save the model to a file
+     * Validate file path to prevent path traversal attacks
      * 
-     * @param filePath Path to save the model
-     * @throws IOException If file cannot be written
+     * @param filePath The file path to validate
+     * @throws IllegalArgumentException If path contains dangerous sequences
+     */
+    private static void validateFilePath(String filePath) {
+        if (filePath == null || filePath.trim().isEmpty()) {
+            throw new IllegalArgumentException("File path cannot be null or empty");
+        }
+        
+        String normalizedPath = filePath.replace('\\', '/');
+        
+        if (normalizedPath.contains("../") || normalizedPath.contains("..\\")) {
+            throw new IllegalArgumentException("Path traversal not allowed: " + filePath);
+        }
+        
+        if (normalizedPath.startsWith("/") || normalizedPath.matches("^[a-zA-Z]:/.*")) {
+            throw new IllegalArgumentException("Absolute paths not allowed: " + filePath);
+        }
+    }
+    
+    /**
+     * Validate that a value is a valid number (not NaN or Infinity)
+     * 
+     * @param value The value to check
+     * @param fieldName The name of the field for error messages
+     */
+    private static void validateNumericValue(double value, String fieldName) {
+        if (Double.isNaN(value) || Double.isInfinite(value)) {
+            throw new IllegalArgumentException("Invalid " + fieldName + ": " + value);
+        }
+    }
+    
+    /**
+     * Saves the trained model to a file.
+     * 
+     * <p>The saved file includes:</p>
+     * <ul>
+     *   <li>Network architecture (layer sizes, activations)</li>
+     *   <li>Hyperparameters (learning rate, momentum, regularization)</li>
+     *   <li>All weights and biases</li>
+     *   <li>Loss function type</li>
+     * </ul>
+     * 
+     * <p>Warning: The file format may change between versions. Loading a model
+     * saved with a different version may fail.</p>
+     * 
+     * @param filePath Path to save the model (will be overwritten if exists)
+     * @throws IOException if file cannot be written
+     * @throws SecurityException if write permission is denied
      */
     public void saveModel(String filePath) throws IOException {
+        validateFilePath(filePath);
+        
         try (PrintWriter writer = new PrintWriter(new FileWriter(filePath))) {
             writer.println(inputSize);
             
@@ -1206,34 +1426,67 @@ public class FlexNet {
     }
     
     /**
-     * Load a model from a file
+     * Loads a trained model from a file.
      * 
-     * @param filePath Path to the model file
-     * @return Loaded FlexNet model
-     * @throws IOException If file cannot be read
+     * <p>Creates a new FlexNet instance with weights and configuration restored
+     * from the saved file. The loaded model can be used immediately for inference.</p>
+     * 
+     * @param filePath Path to the saved model file
+     * @return Loaded FlexNet instance with restored weights and configuration
+     * @throws IOException if file cannot be read or format is invalid
+     * @throws NumberFormatException if file contains invalid data
      */
     public static FlexNet loadModel(String filePath) throws IOException {
+        validateFilePath(filePath);
+        
         try (BufferedReader reader = new BufferedReader(new FileReader(filePath))) {
             int inputSize = Integer.parseInt(reader.readLine().trim());
             
+            if (inputSize <= 0) {
+                throw new IllegalArgumentException("Invalid inputSize: " + inputSize);
+            }
+            
             int numHidden = Integer.parseInt(reader.readLine().trim());
+            if (numHidden < 0) {
+                throw new IllegalArgumentException("Invalid numHidden: " + numHidden);
+            }
+            
             int[] hiddenLayers = new int[numHidden];
             for (int i = 0; i < numHidden; i++) {
                 hiddenLayers[i] = Integer.parseInt(reader.readLine().trim());
+                if (hiddenLayers[i] <= 0) {
+                    throw new IllegalArgumentException("Invalid hidden layer size at index " + i + ": " + hiddenLayers[i]);
+                }
             }
             
             int outputSize = Integer.parseInt(reader.readLine().trim());
+            if (outputSize <= 0) {
+                throw new IllegalArgumentException("Invalid outputSize: " + outputSize);
+            }
             
             int numActivations = Integer.parseInt(reader.readLine().trim());
+            if (numActivations <= 0 || numActivations > 100) {
+                throw new IllegalArgumentException("Invalid numActivations: " + numActivations);
+            }
+            
             String[] activations = new String[numActivations];
             for (int i = 0; i < numActivations; i++) {
                 activations[i] = reader.readLine().trim();
             }
             
             double learningRate = Double.parseDouble(reader.readLine().trim());
+            validateNumericValue(learningRate, "learningRate");
+            
             double momentum = Double.parseDouble(reader.readLine().trim());
+            validateNumericValue(momentum, "momentum");
+            
             double regularization = Double.parseDouble(reader.readLine().trim());
+            validateNumericValue(regularization, "regularization");
+            
             int batchSize = Integer.parseInt(reader.readLine().trim());
+            if (batchSize <= 0) {
+                throw new IllegalArgumentException("Invalid batchSize: " + batchSize);
+            }
             
             LossType lossType = LossType.valueOf(reader.readLine().trim());
             
@@ -1246,9 +1499,15 @@ public class FlexNet {
                 int numNeurons = Integer.parseInt(reader.readLine().trim());
                 int numInputs = Integer.parseInt(reader.readLine().trim());
                 
+                if (numNeurons <= 0 || numNeurons > 100000 || numInputs <= 0 || numInputs > 100000) {
+                    throw new IllegalArgumentException("Invalid layer dimensions at layer " + l + ": neurons=" + numNeurons + ", inputs=" + numInputs);
+                }
+                
                 for (int n = 0; n < numNeurons; n++) {
                     for (int i = 0; i < numInputs; i++) {
-                        network.weights[l][n][i] = Double.parseDouble(reader.readLine().trim());
+                        double weight = Double.parseDouble(reader.readLine().trim());
+                        validateNumericValue(weight, "weight at layer " + l + ", neuron " + n + ", input " + i);
+                        network.weights[l][n][i] = weight;
                     }
                 }
             }
@@ -1256,7 +1515,9 @@ public class FlexNet {
             for (int l = 0; l < network.biases.length; l++) {
                 int numBiases = Integer.parseInt(reader.readLine().trim());
                 for (int n = 0; n < numBiases; n++) {
-                    network.biases[l][n] = Double.parseDouble(reader.readLine().trim());
+                    double bias = Double.parseDouble(reader.readLine().trim());
+                    validateNumericValue(bias, "bias at layer " + l + ", neuron " + n);
+                    network.biases[l][n] = bias;
                 }
             }
             
@@ -1280,7 +1541,9 @@ public class FlexNet {
      */
     public void setLearningRate(double learningRate) {
         if (learningRate <= 0) {
-            throw new IllegalArgumentException("Learning rate must be positive");
+            throw new InvalidArchitectureException(
+                "Learning rate must be positive",
+                "learningRate=" + learningRate);
         }
         this.learningRate = learningRate;
     }
@@ -1593,7 +1856,9 @@ public class FlexNet {
      */
     public void setMomentum(double momentum) {
         if (momentum < 0 || momentum >= 1) {
-            throw new IllegalArgumentException("Momentum must be between 0 and 1");
+            throw new InvalidArchitectureException(
+                "Momentum must be between 0 and 1",
+                "momentum=" + momentum);
         }
         this.momentum = momentum;
     }
@@ -1616,7 +1881,12 @@ public class FlexNet {
      */
     public void setRegularization(double regularization) {
         if (regularization < 0) {
-            throw new IllegalArgumentException("Regularization must be non-negative");
+            throw new InvalidArchitectureException(
+                "Regularization must be non-negative",
+                "regularization=" + regularization);
+        }
+        if (regularization > 1.0) {
+            throw new IllegalArgumentException("Regularization must be <= 1.0 to prevent numerical instability");
         }
         this.regularization = regularization;
     }
@@ -1637,7 +1907,9 @@ public class FlexNet {
      */
     public void setBatchSize(int batchSize) {
         if (batchSize <= 0) {
-            throw new IllegalArgumentException("Batch size must be positive");
+            throw new InvalidArchitectureException(
+                "Batch size must be positive",
+                "batchSize=" + batchSize);
         }
         this.batchSize = batchSize;
     }
@@ -1658,6 +1930,54 @@ public class FlexNet {
      */
     public void setLossType(LossType lossType) {
         this.lossType = lossType;
+    }
+    
+    /**
+     * Enables dropout regularization.
+     * 
+     * <p>Dropout is a regularization technique that randomly sets a fraction of
+     * neurons to 0 during each training iteration, preventing overfitting.
+     * Uses inverted dropout: activations are scaled by 1/(1-dropoutRate) during
+     * training so no scaling is needed at test time.</p>
+     * 
+     * <p>Typical dropout rates: 0.1 to 0.5</p>
+     * 
+     * @param dropoutRate Probability of dropping a neuron (0.0 to 1.0)
+     * @throws InvalidArchitectureException if dropoutRate is not in range [0, 1)
+     */
+    public void enableDropout(double dropoutRate) {
+        if (dropoutRate < 0 || dropoutRate >= 1) {
+            throw new InvalidArchitectureException(
+                "Dropout rate must be in range [0, 1)",
+                "dropoutRate=" + dropoutRate);
+        }
+        this.dropoutRate = dropoutRate;
+        this.dropoutEnabled = true;
+    }
+    
+    /**
+     * Disables dropout regularization.
+     */
+    public void disableDropout() {
+        this.dropoutEnabled = false;
+    }
+    
+    /**
+     * Gets the current dropout rate.
+     * 
+     * @return The dropout probability (0.0 if disabled)
+     */
+    public double getDropoutRate() {
+        return dropoutRate;
+    }
+    
+    /**
+     * Checks if dropout is enabled.
+     * 
+     * @return true if dropout is enabled
+     */
+    public boolean isDropoutEnabled() {
+        return dropoutEnabled;
     }
     
     /**
