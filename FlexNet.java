@@ -25,6 +25,13 @@ enum LossType {
     HUBER
 }
 
+enum LearningRateSchedule {
+    NONE,
+    STEP,
+    EXPONENTIAL,
+    COSINE
+}
+
 public class FlexNet {
     
     private int inputSize;
@@ -45,6 +52,13 @@ public class FlexNet {
     private int batchSize;
     private double gradientClipThreshold;
     private double huberDelta;
+    
+    private LearningRateSchedule lrSchedule;
+    private double initialLearningRate;
+    private int stepSize;
+    private double stepGamma;
+    private double exponentialDecay;
+    private int cosinePeriod;
     
     private Random random;
     
@@ -83,6 +97,12 @@ public class FlexNet {
         this.batchSize = batchSize;
         this.gradientClipThreshold = 0.0;
         this.huberDelta = 1.0;
+        this.lrSchedule = LearningRateSchedule.NONE;
+        this.initialLearningRate = learningRate;
+        this.stepSize = 100;
+        this.stepGamma = 0.1;
+        this.exponentialDecay = 0.95;
+        this.cosinePeriod = 1000;
         this.random = new Random();
         this.lossType = LossType.MSE;
         
@@ -979,6 +999,11 @@ public class FlexNet {
             
             train(shuffledInputs, shuffledTargets, lossType);
             
+            // Apply learning rate schedule
+            if (lrSchedule != LearningRateSchedule.NONE) {
+                learningRate = computeLearningRate(epoch, epochs);
+            }
+            
             if (lossType == LossType.MSE) {
                 history[epoch] = computeMSE(inputs, targets);
             } else if (lossType == LossType.MAE) {
@@ -1164,6 +1189,99 @@ public class FlexNet {
             throw new IllegalArgumentException("Huber delta must be positive");
         }
         this.huberDelta = huberDelta;
+    }
+    
+    /**
+     * Get the current learning rate schedule
+     * 
+     * @return The learning rate schedule type
+     */
+    public LearningRateSchedule getLearningRateSchedule() {
+        return lrSchedule;
+    }
+    
+    /**
+     * Set learning rate schedule to step decay
+     * 
+     * Learning rate is multiplied by gamma every stepSize epochs
+     * 
+     * @param stepSize Number of epochs between LR reductions
+     * @param gamma Factor to multiply LR by (e.g., 0.5 for halving)
+     */
+    public void setStepLearningRate(int stepSize, double gamma) {
+        if (stepSize <= 0) {
+            throw new IllegalArgumentException("Step size must be positive");
+        }
+        if (gamma <= 0 || gamma > 1) {
+            throw new IllegalArgumentException("Gamma must be between 0 and 1");
+        }
+        this.lrSchedule = LearningRateSchedule.STEP;
+        this.stepSize = stepSize;
+        this.stepGamma = gamma;
+    }
+    
+    /**
+     * Set learning rate to exponential decay
+     * 
+     * LR = initialLR * (decayRate ^ epoch)
+     * 
+     * @param decayRate The decay rate (e.g., 0.95)
+     */
+    public void setExponentialLearningRate(double decayRate) {
+        if (decayRate <= 0 || decayRate > 1) {
+            throw new IllegalArgumentException("Decay rate must be between 0 and 1");
+        }
+        this.lrSchedule = LearningRateSchedule.EXPONENTIAL;
+        this.exponentialDecay = decayRate;
+    }
+    
+    /**
+     * Set learning rate to cosine annealing
+     * 
+     * LR decays from initialLR to 0 following half of cosine curve
+     * 
+     * @param period Number of epochs for one full cycle
+     */
+    public void setCosineLearningRate(int period) {
+        if (period <= 0) {
+            throw new IllegalArgumentException("Period must be positive");
+        }
+        this.lrSchedule = LearningRateSchedule.COSINE;
+        this.cosinePeriod = period;
+    }
+    
+    /**
+     * Disable learning rate scheduling (use constant LR)
+     */
+    public void disableLearningRateSchedule() {
+        this.lrSchedule = LearningRateSchedule.NONE;
+        this.learningRate = initialLearningRate;
+    }
+    
+    /**
+     * Compute learning rate based on current epoch and schedule
+     * 
+     * @param epoch Current epoch number
+     * @param totalEpochs Total number of epochs
+     * @return The computed learning rate
+     */
+    private double computeLearningRate(int epoch, int totalEpochs) {
+        switch (lrSchedule) {
+            case STEP:
+                int decays = epoch / stepSize;
+                return initialLearningRate * Math.pow(stepGamma, decays);
+                
+            case EXPONENTIAL:
+                return initialLearningRate * Math.pow(exponentialDecay, epoch);
+                
+            case COSINE:
+                double progress = Math.PI * epoch / cosinePeriod;
+                if (progress > Math.PI) progress = Math.PI;
+                return initialLearningRate * 0.5 * (1.0 + Math.cos(progress));
+                
+            default:
+                return initialLearningRate;
+        }
     }
     
     /**
