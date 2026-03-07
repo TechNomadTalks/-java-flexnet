@@ -41,6 +41,7 @@ public class FlexNet {
     private double momentum;
     private double regularization;
     private int batchSize;
+    private double gradientClipThreshold;
     
     private Random random;
     
@@ -77,6 +78,7 @@ public class FlexNet {
         this.momentum = momentum;
         this.regularization = regularization;
         this.batchSize = batchSize;
+        this.gradientClipThreshold = 0.0;
         this.random = new Random();
         this.lossType = LossType.MSE;
         
@@ -559,6 +561,10 @@ public class FlexNet {
                 for (int n = 0; n < weights[l].length; n++) {
                     double avgGradB = gradB[l][n] / batchActualSize;
                     
+                    if (gradientClipThreshold > 0) {
+                        avgGradB = clipGradient(avgGradB);
+                    }
+                    
                     velocityB[l][n] = momentum * velocityB[l][n] - 
                                      learningRate * avgGradB;
                     biases[l][n] += velocityB[l][n];
@@ -567,6 +573,10 @@ public class FlexNet {
                         double avgGradW = gradW[l][n][i2] / batchActualSize +
                                          regularization * weights[l][n][i2];
                         
+                        if (gradientClipThreshold > 0) {
+                            avgGradW = clipGradient(avgGradW);
+                        }
+                        
                         velocityW[l][n][i2] = momentum * velocityW[l][n][i2] - 
                                              learningRate * avgGradW;
                         weights[l][n][i2] += velocityW[l][n][i2];
@@ -574,6 +584,21 @@ public class FlexNet {
                 }
             }
         }
+    }
+    
+    /**
+     * Clip gradient to prevent exploding gradients
+     * 
+     * @param gradient The gradient value
+     * @return Clipped gradient
+     */
+    private double clipGradient(double gradient) {
+        if (gradient > gradientClipThreshold) {
+            return gradientClipThreshold;
+        } else if (gradient < -gradientClipThreshold) {
+            return -gradientClipThreshold;
+        }
+        return gradient;
     }
     
     /**
@@ -983,6 +1008,27 @@ public class FlexNet {
             throw new IllegalArgumentException("Learning rate must be positive");
         }
         this.learningRate = learningRate;
+    }
+    
+    /**
+     * Get the gradient clipping threshold
+     * 
+     * @return Gradient clip threshold (0 means no clipping)
+     */
+    public double getGradientClipThreshold() {
+        return gradientClipThreshold;
+    }
+    
+    /**
+     * Set gradient clipping threshold to prevent exploding gradients
+     * 
+     * @param gradientClipThreshold Threshold for gradient clipping (0 to disable)
+     */
+    public void setGradientClipThreshold(double gradientClipThreshold) {
+        if (gradientClipThreshold < 0) {
+            throw new IllegalArgumentException("Gradient clip threshold must be non-negative");
+        }
+        this.gradientClipThreshold = gradientClipThreshold;
     }
     
     /**
