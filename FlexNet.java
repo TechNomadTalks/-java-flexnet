@@ -180,6 +180,12 @@ public class FlexNet {
                    String[] activations, double learningRate, 
                    double momentum, double regularization, int batchSize) {
         
+        if (learningRate <= 0) {
+            throw new InvalidArchitectureException(
+                "Learning rate must be positive",
+                "learningRate=" + learningRate);
+        }
+        
         this.inputSize = inputSize;
         this.hiddenLayers = hiddenLayers != null ? hiddenLayers.clone() : new int[0];
         this.outputSize = outputSize;
@@ -346,6 +352,12 @@ public class FlexNet {
      * @throws InvalidArchitectureException if input dimensions are invalid
      */
     public double[] predict(double[] input) {
+        if (input == null) {
+            throw new InvalidArchitectureException(
+                "Input cannot be null",
+                "input is null");
+        }
+        
         if (input.length != inputSize) {
             throw new InvalidArchitectureException(
                 "Input size mismatch. Expected " + inputSize + ", got " + input.length,
@@ -449,8 +461,13 @@ public class FlexNet {
                     sum += result[i];
                 }
                 
-                for (int i = 0; i < values.length; i++) {
-                    result[i] /= sum;
+                if (sum == 0.0 || Double.isNaN(sum) || Double.isInfinite(sum)) {
+                    double defaultValue = 1.0 / values.length;
+                    Arrays.fill(result, defaultValue);
+                } else {
+                    for (int i = 0; i < values.length; i++) {
+                        result[i] /= sum;
+                    }
                 }
                 break;
                 
@@ -629,6 +646,10 @@ public class FlexNet {
                     double mHat = mB[l][n] / (1 - Math.pow(adamBeta1, adamT + 1));
                     double vHat = vB[l][n] / (1 - Math.pow(adamBeta2, adamT + 1));
                     
+                    if (Double.isNaN(vHat) || Double.isInfinite(vHat)) {
+                        vHat = adamEpsilon;
+                    }
+                    
                     biases[l][n] -= learningRate * mHat / (Math.sqrt(vHat) + adamEpsilon);
                     
                     // Adam update for weights
@@ -692,6 +713,21 @@ public class FlexNet {
         
         if (inputs.length == 0) {
             throw new IllegalArgumentException("Input arrays cannot be empty");
+        }
+        
+        for (int i = 0; i < inputs.length; i++) {
+            if (inputs[i] == null) {
+                throw new IllegalArgumentException("Input at index " + i + " is null");
+            }
+            if (inputs[i].length != inputSize) {
+                throw new IllegalArgumentException("Input at index " + i + " has wrong size: " + inputs[i].length + " (expected " + inputSize + ")");
+            }
+            if (targets[i] == null) {
+                throw new IllegalArgumentException("Target at index " + i + " is null");
+            }
+            if (targets[i].length != outputSize) {
+                throw new IllegalArgumentException("Target at index " + i + " has wrong size: " + targets[i].length + " (expected " + outputSize + ")");
+            }
         }
         
         if (batchSize <= 0) {
@@ -830,6 +866,10 @@ public class FlexNet {
                         
                         double mHat = mB[l][n] / (1 - Math.pow(adamBeta1, adamT));
                         double vHat = vB[l][n] / (1 - Math.pow(adamBeta2, adamT));
+                        
+                        if (Double.isNaN(vHat) || Double.isInfinite(vHat)) {
+                            vHat = adamEpsilon;
+                        }
                         
                         biases[l][n] -= learningRate * mHat / (Math.sqrt(vHat) + adamEpsilon);
                         
@@ -1073,9 +1113,17 @@ public class FlexNet {
         int correct = 0;
         
         for (int i = 0; i < inputs.length; i++) {
+            if (labels[i] == null || labels[i].length == 0) {
+                throw new IllegalArgumentException("Label at index " + i + " is null or empty");
+            }
+            
             double[] prediction = predict(inputs[i]);
             int predictedClass = argMax(prediction);
             int trueClass = labels[i][0];
+            
+            if (trueClass < 0 || trueClass >= outputSize) {
+                throw new IllegalArgumentException("Label at index " + i + " is out of bounds: " + trueClass + " (expected 0-" + (outputSize - 1) + ")");
+            }
             
             if (predictedClass == trueClass) {
                 correct++;
@@ -1104,9 +1152,17 @@ public class FlexNet {
         int falsePositives = 0;
         
         for (int i = 0; i < inputs.length; i++) {
+            if (labels[i] == null || labels[i].length == 0) {
+                throw new IllegalArgumentException("Label at index " + i + " is null or empty");
+            }
+            
             double[] prediction = predict(inputs[i]);
             int predictedClass = argMax(prediction);
             int trueClass = labels[i][0];
+            
+            if (trueClass < 0 || trueClass >= outputSize) {
+                throw new IllegalArgumentException("Label at index " + i + " is out of bounds: " + trueClass + " (expected 0-" + (outputSize - 1) + ")");
+            }
             
             if (predictedClass == classIndex && trueClass == classIndex) {
                 truePositives++;
@@ -1141,9 +1197,17 @@ public class FlexNet {
         int falseNegatives = 0;
         
         for (int i = 0; i < inputs.length; i++) {
+            if (labels[i] == null || labels[i].length == 0) {
+                throw new IllegalArgumentException("Label at index " + i + " is null or empty");
+            }
+            
             double[] prediction = predict(inputs[i]);
             int predictedClass = argMax(prediction);
             int trueClass = labels[i][0];
+            
+            if (trueClass < 0 || trueClass >= outputSize) {
+                throw new IllegalArgumentException("Label at index " + i + " is out of bounds: " + trueClass + " (expected 0-" + (outputSize - 1) + ")");
+            }
             
             if (predictedClass == classIndex && trueClass == classIndex) {
                 truePositives++;
@@ -1211,6 +1275,10 @@ public class FlexNet {
     }
     
     private int argMax(double[] array) {
+        if (array == null || array.length == 0) {
+            throw new IllegalArgumentException("Array cannot be null or empty");
+        }
+        
         int maxIndex = 0;
         double maxValue = array[0];
         
