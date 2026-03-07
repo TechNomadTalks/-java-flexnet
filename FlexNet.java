@@ -60,6 +60,16 @@ public class FlexNet {
     private double exponentialDecay;
     private int cosinePeriod;
     
+    // Early stopping
+    private boolean earlyStoppingEnabled;
+    private int earlyStoppingPatience;
+    private double earlyStoppingMinDelta;
+    private double bestValidationLoss;
+    private int epochsWithoutImprovement;
+    private boolean earlyStoppingTriggered;
+    private double[][][] bestWeights;
+    private double[][] bestBiases;
+    
     private Random random;
     
     private double[][] preActivations;
@@ -103,6 +113,12 @@ public class FlexNet {
         this.stepGamma = 0.1;
         this.exponentialDecay = 0.95;
         this.cosinePeriod = 1000;
+        this.earlyStoppingEnabled = false;
+        this.earlyStoppingPatience = 10;
+        this.earlyStoppingMinDelta = 0.0;
+        this.bestValidationLoss = Double.MAX_VALUE;
+        this.epochsWithoutImprovement = 0;
+        this.earlyStoppingTriggered = false;
         this.random = new Random();
         this.lossType = LossType.MSE;
         
@@ -976,6 +992,10 @@ public class FlexNet {
     public double[] trainEpochs(double[][] inputs, double[][] targets, int epochs, LossType lossType) {
         double[] history = new double[epochs];
         
+        if (earlyStoppingEnabled) {
+            resetEarlyStopping();
+        }
+        
         for (int epoch = 0; epoch < epochs; epoch++) {
             int[] indices = new int[inputs.length];
             for (int i = 0; i < indices.length; i++) {
@@ -1012,6 +1032,31 @@ public class FlexNet {
                 history[epoch] = computeHuber(inputs, targets);
             } else {
                 history[epoch] = computeCrossEntropy(inputs, targets);
+            }
+            
+            // Check early stopping
+            if (earlyStoppingEnabled) {
+                double currentLoss = history[epoch];
+                
+                if (currentLoss < bestValidationLoss - earlyStoppingMinDelta) {
+                    bestValidationLoss = currentLoss;
+                    epochsWithoutImprovement = 0;
+                    saveBestWeights();
+                } else {
+                    epochsWithoutImprovement++;
+                }
+                
+                if (epochsWithoutImprovement >= earlyStoppingPatience) {
+                    earlyStoppingTriggered = true;
+                    restoreBestWeights();
+                    System.out.println("Early stopping triggered at epoch " + (epoch + 1) + 
+                                     " (best loss: " + String.format("%.6f", bestValidationLoss) + ")");
+                    // Fill remaining history with best loss
+                    for (int e = epoch + 1; e < epochs; e++) {
+                        history[e] = bestValidationLoss;
+                    }
+                    break;
+                }
             }
         }
         
@@ -1281,6 +1326,95 @@ public class FlexNet {
                 
             default:
                 return initialLearningRate;
+        }
+    }
+    
+    /**
+     * Enable early stopping to prevent overfitting
+     * 
+     * Training stops when validation loss does not improve by minDelta for patience epochs
+     * 
+     * @param patience Number of epochs to wait for improvement
+     * @param minDelta Minimum improvement to count as improvement
+     */
+    public void enableEarlyStopping(int patience, double minDelta) {
+        if (patience <= 0) {
+            throw new IllegalArgumentException("Patience must be positive");
+        }
+        if (minDelta < 0) {
+            throw new IllegalArgumentException("Min delta must be non-negative");
+        }
+        this.earlyStoppingEnabled = true;
+        this.earlyStoppingPatience = patience;
+        this.earlyStoppingMinDelta = minDelta;
+        this.bestValidationLoss = Double.MAX_VALUE;
+        this.epochsWithoutImprovement = 0;
+        this.earlyStoppingTriggered = false;
+    }
+    
+    /**
+     * Disable early stopping
+     */
+    public void disableEarlyStopping() {
+        this.earlyStoppingEnabled = false;
+    }
+    
+    /**
+     * Check if early stopping was triggered
+     * 
+     * @return True if early stopping stopped training
+     */
+    public boolean wasEarlyStoppingTriggered() {
+        return earlyStoppingTriggered;
+    }
+    
+    /**
+     * Get number of epochs without improvement
+     * 
+     * @return Epochs since best validation loss
+     */
+    public int getEpochsWithoutImprovement() {
+        return epochsWithoutImprovement;
+    }
+    
+    /**
+     * Reset early stopping state for new training
+     */
+    private void resetEarlyStopping() {
+        this.bestValidationLoss = Double.MAX_VALUE;
+        this.epochsWithoutImprovement = 0;
+        this.earlyStoppingTriggered = false;
+        this.bestWeights = null;
+        this.bestBiases = null;
+    }
+    
+    /**
+     * Save current weights as best
+     */
+    private void saveBestWeights() {
+        this.bestWeights = new double[weights.length][][];
+        this.bestBiases = new double[biases.length][];
+        
+        for (int l = 0; l < weights.length; l++) {
+            bestWeights[l] = new double[weights[l].length][];
+            for (int n = 0; n < weights[l].length; n++) {
+                bestWeights[l][n] = weights[l][n].clone();
+            }
+            bestBiases[l] = biases[l].clone();
+        }
+    }
+    
+    /**
+     * Restore best weights
+     */
+    private void restoreBestWeights() {
+        if (bestWeights == null) return;
+        
+        for (int l = 0; l < weights.length; l++) {
+            for (int n = 0; n < weights[l].length; n++) {
+                System.arraycopy(bestWeights[l][n], 0, weights[l][n], 0, bestWeights[l][n].length);
+            }
+            System.arraycopy(bestBiases[l], 0, biases[l], 0, bestBiases[l].length);
         }
     }
     
