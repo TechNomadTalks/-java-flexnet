@@ -21,7 +21,8 @@ import java.util.*;
 enum LossType {
     MSE,
     CROSS_ENTROPY,
-    MAE
+    MAE,
+    HUBER
 }
 
 public class FlexNet {
@@ -43,6 +44,7 @@ public class FlexNet {
     private double regularization;
     private int batchSize;
     private double gradientClipThreshold;
+    private double huberDelta;
     
     private Random random;
     
@@ -80,6 +82,7 @@ public class FlexNet {
         this.regularization = regularization;
         this.batchSize = batchSize;
         this.gradientClipThreshold = 0.0;
+        this.huberDelta = 1.0;
         this.random = new Random();
         this.lossType = LossType.MSE;
         
@@ -394,6 +397,19 @@ public class FlexNet {
                 deltas[outputLayer][n] = sign * activationDerivative(
                     preActivations[outputLayer][n], activations[outputLayer]);
             }
+        } else if (lossType == LossType.HUBER) {
+            for (int n = 0; n < outputSize; n++) {
+                double error = output[n] - target[n];
+                double absError = Math.abs(error);
+                double gradient;
+                if (absError <= huberDelta) {
+                    gradient = error;
+                } else {
+                    gradient = huberDelta * ((error > 0) ? 1.0 : -1.0);
+                }
+                deltas[outputLayer][n] = gradient * activationDerivative(
+                    preActivations[outputLayer][n], activations[outputLayer]);
+            }
         } else if (lossType == LossType.CROSS_ENTROPY) {
             for (int n = 0; n < outputSize; n++) {
                 double error = output[n] - target[n];
@@ -524,6 +540,19 @@ public class FlexNet {
                         double error = output[n] - targets[i][n];
                         double sign = (error > 0) ? 1.0 : (error < 0) ? -1.0 : 0.0;
                         deltas[outputLayer][n] = sign * activationDerivative(
+                            preActivations[outputLayer][n], activations[outputLayer]);
+                    }
+                } else if (lossType == LossType.HUBER) {
+                    for (int n = 0; n < outputSize; n++) {
+                        double error = output[n] - targets[i][n];
+                        double absError = Math.abs(error);
+                        double gradient;
+                        if (absError <= huberDelta) {
+                            gradient = error;
+                        } else {
+                            gradient = huberDelta * ((error > 0) ? 1.0 : -1.0);
+                        }
+                        deltas[outputLayer][n] = gradient * activationDerivative(
                             preActivations[outputLayer][n], activations[outputLayer]);
                     }
                 } else if (lossType == LossType.CROSS_ENTROPY) {
@@ -665,6 +694,43 @@ public class FlexNet {
             
             for (int j = 0; j < targets[i].length; j++) {
                 totalError += Math.abs(prediction[j] - targets[i][j]);
+            }
+        }
+        
+        return totalError / inputs.length;
+    }
+    
+    /**
+     * Compute Huber loss
+     * 
+     * Huber loss is quadratic for small errors, linear for large errors
+     * L = 0.5 * error^2 for |error| <= delta
+     * L = delta * |error| - 0.5 * delta^2 for |error| > delta
+     * 
+     * @param inputs Array of input samples
+     * @param targets Array of target outputs
+     * @return Huber loss
+     */
+    public double computeHuber(double[][] inputs, double[][] targets) {
+        if (inputs.length != targets.length) {
+            throw new IllegalArgumentException("Number of inputs and targets must match");
+        }
+        
+        double totalError = 0.0;
+        double delta = huberDelta;
+        
+        for (int i = 0; i < inputs.length; i++) {
+            double[] prediction = predict(inputs[i]);
+            
+            for (int j = 0; j < targets[i].length; j++) {
+                double error = prediction[j] - targets[i][j];
+                double absError = Math.abs(error);
+                
+                if (absError <= delta) {
+                    totalError += 0.5 * error * error;
+                } else {
+                    totalError += delta * absError - 0.5 * delta * delta;
+                }
             }
         }
         
@@ -917,6 +983,8 @@ public class FlexNet {
                 history[epoch] = computeMSE(inputs, targets);
             } else if (lossType == LossType.MAE) {
                 history[epoch] = computeMAE(inputs, targets);
+            } else if (lossType == LossType.HUBER) {
+                history[epoch] = computeHuber(inputs, targets);
             } else {
                 history[epoch] = computeCrossEntropy(inputs, targets);
             }
@@ -1073,6 +1141,29 @@ public class FlexNet {
             throw new IllegalArgumentException("Gradient clip threshold must be non-negative");
         }
         this.gradientClipThreshold = gradientClipThreshold;
+    }
+    
+    /**
+     * Get the Huber loss delta threshold
+     * 
+     * @return Huber delta (default 1.0)
+     */
+    public double getHuberDelta() {
+        return huberDelta;
+    }
+    
+    /**
+     * Set the Huber loss delta threshold
+     * 
+     * Huber loss is quadratic for |error| <= delta, linear for |error| > delta
+     * 
+     * @param huberDelta Threshold between quadratic and linear regions
+     */
+    public void setHuberDelta(double huberDelta) {
+        if (huberDelta <= 0) {
+            throw new IllegalArgumentException("Huber delta must be positive");
+        }
+        this.huberDelta = huberDelta;
     }
     
     /**
